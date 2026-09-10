@@ -817,6 +817,11 @@ textarea {
 }
 
 #appShell > header {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+    width: 100%;
     padding-left: var(--safe-left);
     padding-right: var(--safe-right);
 }
@@ -833,6 +838,8 @@ textarea {
 }
 
 #appShell > main {
+    /* Reserva o espaço do cabeçalho fixo; somente o conteúdo rola. */
+    margin-top: 5rem;
     padding-left: max(var(--app-gutter), calc(var(--safe-left) + var(--app-gutter)));
     padding-right: max(var(--app-gutter), calc(var(--safe-right) + var(--app-gutter)));
     padding-top: clamp(1.5rem, 2vw, 2.25rem);
@@ -953,6 +960,7 @@ textarea {
     }
 
     #appShell > main {
+        margin-top: 4rem;
         padding-left: max(var(--app-gutter-mobile), calc(var(--safe-left) + var(--app-gutter-mobile)));
         padding-right: max(var(--app-gutter-mobile), calc(var(--safe-right) + var(--app-gutter-mobile)));
         padding-top: 1rem;
