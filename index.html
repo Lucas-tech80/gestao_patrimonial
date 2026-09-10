@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Gestao Patrimonial | MHS</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Supabase JS -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- App CSS -->
+    <link rel="stylesheet" href="./styles.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        primary: '#0f172a',
+                        secondary: '#3b82f6',
+                        accent: '#e11d48'
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+
+<body class="bg-slate-50 text-slate-800 font-sans antialiased min-h-screen selection:bg-secondary selection:text-white">
+    <!-- ================= LOGIN ================= -->
+    <section id="loginScreen" class="hidden min-h-screen min-h-[100dvh] w-full items-center justify-center bg-slate-100 px-4 py-8 sm:px-6">
+        <div class="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/60 sm:p-8">
+            <div class="mb-8 text-center">
+                <img src="https://res.cloudinary.com/dbnyxxhe3/image/upload/v1772102800/02_Prancheta_1_ksm9oj.png" alt="Logo MHS" class="mx-auto mb-5 h-14 w-auto object-contain">
+                <h1 class="text-2xl font-bold tracking-tight text-slate-800">Gestão Patrimonial</h1>
+                <p class="mt-2 text-sm text-slate-500">Acesse sua conta</p>
+            </div>
+
+            <form id="formLogin" class="space-y-5" novalidate>
+                <div>
+                    <label for="login_email" class="mb-2 block text-sm font-semibold text-slate-700">E-mail</label>
+                    <input id="login_email" name="email" type="email" autocomplete="email" required class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-secondary focus:ring-4 focus:ring-blue-100" placeholder="usuario@email.com">
+                </div>
+
+                <div>
+                    <label for="login_password" class="mb-2 block text-sm font-semibold text-slate-700">Senha</label>
+                    <input id="login_password" name="password" type="password" autocomplete="current-password" required class="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-800 outline-none transition-colors placeholder:text-slate-400 focus:border-secondary focus:ring-4 focus:ring-blue-100" placeholder="Digite sua senha">
+                </div>
+
+                <p id="loginError" class="hidden rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700" role="alert" aria-live="polite"></p>
+
+                <button id="btnLogin" type="submit" class="w-full rounded-xl bg-secondary px-4 py-3 font-semibold text-white shadow-sm transition-colors hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-70">
+                    Entrar
+                </button>
+            </form>
+        </div>
+    </section>
+
+    <!-- ================= SISTEMA ================= -->
+    <div id="appScreen" class="hidden">
+    <!-- ================= APP SHELL ================= -->
+    <div id="appShell" class="min-h-screen flex flex-col">
+        <!-- CABECALHO -->
+        <header class="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-20">
+
+                    <div class="flex flex-col justify-center flex-shrink-0">
+                        <div class="flex items-center gap-3">
+                            <img src="https://res.cloudinary.com/dbnyxxhe3/image/upload/v1772102800/02_Prancheta_1_ksm9oj.png" alt="Logo MHS" class="h-10 w-auto object-contain">
+                            <h1 class="text-xl font-bold text-slate-800 tracking-tight leading-none hidden sm:block">Gestao Patrimonial</h1>
+                        </div>
+
+                        <div class="flex items-center mt-1 ml-1 sm:ml-12">
+                            <span class="relative flex h-2.5 w-2.5 mr-1.5">
+                                <span id="connectionPing" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-slate-400 opacity-75"></span>
+                                <span id="connectionDot" class="relative inline-flex rounded-full h-2.5 w-2.5 bg-slate-400"></span>
+                            </span>
+                            <span id="connectionStatus" class="text-xs font-semibold text-slate-500">Conectando...</span>
+                        </div>
+                    </div>
+
+                    <nav class="hidden lg:flex space-x-2 mx-4">
+                        <button type="button" onclick="navigate('dashboard')" class="nav-btn px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 bg-blue-50 text-secondary" data-target="dashboard">
+                            <i class="fa-solid fa-chart-pie mr-1.5"></i> Resumo
+                        </button>
+                        <button type="button" onclick="navigate('ativos')" class="nav-btn px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900" data-target="ativos">
+                            <i class="fa-solid fa-boxes-stacked mr-1.5"></i> Itens
+                        </button>
+                        <button type="button" onclick="navigate('cadastro')" class="nav-btn px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900" data-target="cadastro">
+                            <i class="fa-solid fa-plus-circle mr-1.5"></i> Cadastro
+                        </button>
+                        <button type="button" onclick="navigate('historico')" class="nav-btn px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900" data-target="historico">
+                            <i class="fa-solid fa-clock-rotate-left mr-1.5"></i> Historico
+                        </button>
+                        <button type="button" onclick="navigate('relatorios')" class="nav-btn px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900" data-target="relatorios">
+                            <i class="fa-solid fa-file-export mr-1.5"></i> Relatorios
+                        </button>
+                    </nav>
+
+                    <div class="flex items-center gap-2 text-slate-500">
+                        <div class="hidden md:flex flex-col items-end leading-tight">
+                            <span class="text-[11px] uppercase tracking-wider font-bold text-slate-400">Usuario</span>
+                            <span id="userEmailLabel" class="text-xs font-semibold text-slate-700 max-w-[170px] truncate">-</span>
+                        </div>
+
+                        <button type="button" id="adminConfigBtn" class="hidden items-center p-2 text-slate-600 hover:bg-blue-50 hover:text-secondary rounded-lg focus:outline-none transition-colors" title="Perfil de configuração" aria-label="Abrir perfil de configuração">
+                            <i class="fa-solid fa-gear text-lg"></i>
+                        </button>
+
+                        <button type="button" id="logoutBtn" class="hidden items-center p-2 text-slate-600 hover:bg-rose-50 hover:text-accent rounded-lg focus:outline-none transition-colors" title="Sair">
+                            <i class="fa-solid fa-arrow-right-from-bracket text-lg"></i>
+                        </button>
+
+                        <button type="button" id="mobileMenuBtn" class="lg:hidden p-2 text-slate-600 hover:bg-slate-100 rounded-lg focus:outline-none">
+                            <i class="fa-solid fa-bars text-xl"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="mobileNav" class="hidden lg:hidden border-t border-slate-100 bg-slate-50 px-4 py-3 space-y-2 shadow-inner">
+                <button type="button" onclick="navigate('dashboard')" class="nav-btn w-full text-left px-4 py-3 rounded-lg text-sm font-semibold bg-blue-50 text-secondary border border-blue-100" data-target="dashboard">
+                    <i class="fa-solid fa-chart-pie mr-2"></i> Resumo
+                </button>
+                <button type="button" onclick="navigate('ativos')" class="nav-btn w-full text-left px-4 py-3 rounded-lg text-sm font-semibold text-slate-600 hover:bg-white border border-transparent hover:border-slate-200" data-target="ativos">
+                    <i class="fa-solid fa-boxes-stacked mr-2"></i> Itens
+                </button>
+                <button type="button" onclick="navigate('cadastro')" class="nav-btn w-full text-left px-4 py-3 rounded-lg text-sm font-semibold text-slate-600 hover:bg-white border border-transparent hover:border-slate-200" data-target="cadastro">
+                    <i class="fa-solid fa-plus-circle mr-2"></i> Cadastro
+                </button>
+                <button type="button" onclick="navigate('historico')" class="nav-btn w-full text-left px-4 py-3 rounded-lg text-sm font-semibold text-slate-600 hover:bg-white border border-transparent hover:border-slate-200" data-target="historico">
+                    <i class="fa-solid fa-clock-rotate-left mr-2"></i> Historico
+                </button>
+                <button type="button" onclick="navigate('relatorios')" class="nav-btn w-full text-left px-4 py-3 rounded-lg text-sm font-semibold text-slate-600 hover:bg-white border border-transparent hover:border-slate-200" data-target="relatorios">
+                    <i class="fa-solid fa-file-export mr-2"></i> Relatorios
+                </button>
+                <button type="button" id="mobileLogoutBtn" class="hidden w-full text-left px-4 py-3 rounded-lg text-sm font-semibold text-rose-600 hover:bg-white border border-transparent hover:border-rose-100">
+                    <i class="fa-solid fa-arrow-right-from-bracket mr-2"></i> Sair
+                </button>
+            </div>
+        </header>
+
+        <main class="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+            <!-- ================= VIEW: DASHBOARD ================= -->
+            <section id="view-dashboard" class="view-section block animate-[fadeIn_0.3s_ease-out]">
+                <div class="mb-8">
+                    <h2 class="text-2xl font-bold text-slate-800">Analise Geral de Imobilizados</h2>
+                    <p class="text-slate-500 text-sm mt-1">Resumo atualizado do patrimonio corporativo ativo.</p>
+                </div>
+
+                <div class="summary-kpi-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                    <div class="summary-kpi-card summary-kpi-total bg-white rounded-2xl p-5 shadow-sm border border-slate-200/70 min-w-0">
+                        <div class="h-10 w-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600 text-lg border border-emerald-100 mb-4">
+                            <i class="fa-solid fa-dollar-sign"></i>
+                        </div>
+                        <p class="text-xs font-bold text-slate-400 uppercase tracking-wider">Valor Total</p>
+                        <h3 class="mt-2 text-xl sm:text-2xl font-bold truncate" id="kpi-valor-total">R$ 0,00</h3>
+                        <p class="summary-kpi-variation" id="kpi-valor-total-variation">Sem histórico</p>
+                        <svg class="summary-kpi-sparkline" id="kpi-valor-total-sparkline" viewBox="0 0 100 28" aria-hidden="true"><path></path></svg>
+                    </div>
+
+                    <div class="summary-kpi-card summary-kpi-items bg-white rounded-2xl p-5 shadow-sm border border-slate-200/70 min-w-0">
+                        <div class="h-10 w-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600 text-lg border border-blue-100 mb-4">
+                            <i class="fa-solid fa-cubes"></i>
+                        </div>
+                        <p class="text-xs font-bold text-slate-400 uppercase tracking-wider">Total de Itens</p>
+                        <h3 class="mt-2 text-xl sm:text-2xl font-bold" id="kpi-total-itens">0</h3>
+                        <p class="summary-kpi-variation" id="kpi-total-itens-variation">Sem histórico</p>
+                        <svg class="summary-kpi-sparkline" id="kpi-total-itens-sparkline" viewBox="0 0 100 28" aria-hidden="true"><path></path></svg>
+                    </div>
+
+                    <div class="summary-kpi-card summary-kpi-locations bg-white rounded-2xl p-5 shadow-sm border border-slate-200/70 min-w-0">
+                        <div class="h-10 w-10 rounded-xl bg-purple-50 flex items-center justify-center text-purple-600 text-lg border border-purple-100 mb-4">
+                            <i class="fa-solid fa-map-location-dot"></i>
+                        </div>
+                        <p class="text-xs font-bold text-slate-400 uppercase tracking-wider">Locais Mapeados</p>
+                        <h3 class="mt-2 text-xl sm:text-2xl font-bold" id="kpi-locais">0</h3>
+                        <p class="summary-kpi-variation" id="kpi-locais-variation">Sem histórico</p>
+                        <svg class="summary-kpi-sparkline" id="kpi-locais-sparkline" viewBox="0 0 100 28" aria-hidden="true"><path></path></svg>
+                    </div>
+
+                    <div id="kpi-maior-valor-card" onclick="navigateToMaiorValor()" class="summary-kpi-card summary-kpi-highest bg-white rounded-2xl p-5 shadow-sm border border-slate-200/70 min-w-0 cursor-pointer">
+                        <div class="h-10 w-10 rounded-xl bg-orange-50 flex items-center justify-center text-orange-600 text-lg border border-orange-100 mb-4">
+                            <i class="fa-solid fa-arrow-up-right-dots"></i>
+                        </div>
+                        <p class="text-xs font-bold text-slate-400 uppercase tracking-wider">Maior Valor</p>
+                        <h3 class="mt-2 text-xl sm:text-2xl font-bold truncate" id="kpi-maior-valor">-</h3>
+                        <p class="summary-kpi-variation" id="kpi-maior-valor-variation">Sem histórico</p>
+                        <svg class="summary-kpi-sparkline" id="kpi-maior-valor-sparkline" viewBox="0 0 100 28" aria-hidden="true"><path></path></svg>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="classification-card bg-white rounded-xl p-5 shadow-sm border border-slate-200/60">
+                        <div class="classification-card-heading">
+                            <h3 class="text-lg font-bold text-slate-700">Valor por Classificação</h3>
+                            <div class="classification-display-toggle" aria-label="Unidade de exibição">
+                                <span class="is-active">%</span>
+                                <span>R$</span>
+                            </div>
+                        </div>
+                        <div class="classification-chart-layout">
+                            <div class="classification-chart-canvas">
+                                <canvas id="chartClassificacao"></canvas>
+                            </div>
+                            <div id="classificationLegend" class="classification-chart-legend" aria-label="Legenda do valor por classificação"></div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl p-5 shadow-sm border border-slate-200/60">
+                        <div class="chart-card-heading">
+                            <h3 id="chartLocalTitle" class="text-lg font-bold text-slate-700">Quantidade de Itens por Local</h3>
+                            <button type="button" id="toggleChartLocal" class="chart-toggle-button" onclick="toggleChartLocalView()" title="Visualizar por status" aria-label="Visualizar por status">
+                                <i class="fa-solid fa-right-left" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                        <div class="relative h-64 w-full">
+                            <canvas id="chartLocal"></canvas>
+                            <div id="localChartVisual" class="local-chart-visual" aria-label="Quantidade de Itens por Local"></div>
+                            <div id="statusChartVisual" class="status-chart-visual hidden" aria-label="Quantidade de Itens por Status"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================= VIEW: ATIVOS ================= -->
+            <section id="view-ativos" class="view-section hidden animate-[fadeIn_0.3s_ease-out]">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-800">Itens</h2>
+                        <p class="text-slate-500 text-sm mt-1">Clique na area para expandir os itens alocados.</p>
+                    </div>
+                    <div class="relative w-full md:w-72">
+                        <i class="fa-solid fa-search absolute left-3 top-3 text-slate-400"></i>
+                        <input type="text" id="searchInput" placeholder="Buscar ativo..." class="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-secondary focus:border-transparent text-sm">
+                    </div>
+                </div>
+
+                <div id="ativosContainer" class="space-y-4"></div>
+            </section>
+
+            <!-- ================= VIEW: CADASTRO / EDICAO ================= -->
+            <section id="view-cadastro" class="view-section hidden animate-[fadeIn_0.3s_ease-out]">
+                <div class="mb-8 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+                    <div>
+                        <h2 id="cadastroTitle" class="text-2xl font-bold text-slate-800">Registrar Novo Ativo</h2>
+                        <p id="cadastroSubtitle" class="text-slate-500 text-sm mt-1">Insira os dados do novo patrimonio para o banco de dados.</p>
+                    </div>
+
+                    <button type="button" id="btnCancelarEdicao" class="hidden bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-medium py-2.5 px-4 rounded-lg transition-all">
+                        <i class="fa-solid fa-xmark mr-2"></i> Cancelar edicao
+                    </button>
+                </div>
+
+                <div class="bg-white rounded-xl p-6 shadow-sm border border-slate-200/60 max-w-4xl mx-auto">
+                    <form id="formCadastro" class="space-y-6">
+                        <input type="hidden" id="cad_editing_id">
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">N do Item (Plaqueta)</label>
+                                <input type="text" id="cad_numero" required class="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-secondary/50 focus:border-secondary focus:outline-none transition-colors bg-slate-50 focus:bg-white" placeholder="Ex: 0022">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">Descricao do Item</label>
+                                <input type="text" id="cad_item" required class="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-secondary/50 focus:border-secondary focus:outline-none transition-colors bg-slate-50 focus:bg-white" placeholder="Ex: Cadeira Presidente">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">Classificacao</label>
+                                <select id="cad_classificacao" required class="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-secondary/50 focus:border-secondary focus:outline-none transition-colors bg-slate-50 focus:bg-white">
+                                    <option value="">Selecione...</option>
+                                    <option value="Movel">Movel</option>
+                                    <option value="Computador">Computador</option>
+                                    <option value="Celular">Celular</option>
+                                    <option value="Eletrodomestico">Eletrodomestico</option>
+                                    <option value="Veiculo">Veiculo</option>
+                                    <option value="Outros">Outros</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">Local Alocado</label>
+                                <input type="text" id="cad_local" required class="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-secondary/50 focus:border-secondary focus:outline-none transition-colors bg-slate-50 focus:bg-white" placeholder="Ex: Sala Diretoria">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">Data da Compra</label>
+                                <input type="date" id="cad_data" required class="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-secondary/50 focus:border-secondary focus:outline-none transition-colors bg-slate-50 focus:bg-white">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">Preco (R$)</label>
+                                <input type="number" step="0.01" id="cad_preco" required class="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-secondary/50 focus:border-secondary focus:outline-none transition-colors bg-slate-50 focus:bg-white" placeholder="0.00">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">Numero NF</label>
+                                <input type="text" id="cad_nf" class="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-secondary/50 focus:border-secondary focus:outline-none transition-colors bg-slate-50 focus:bg-white" placeholder="Ex: 1295597">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">Forma de Pagamento</label>
+                                <select id="cad_pagamento" class="w-full px-4 py-2.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-secondary/50 focus:border-secondary focus:outline-none transition-colors bg-slate-50 focus:bg-white">
+                                    <option value="Pix">Pix</option>
+                                    <option value="Boleto">Boleto</option>
+                                    <option value="Dinheiro">Dinheiro</option>
+                                    <option value="Cartao">Cartao de Credito</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <hr class="border-slate-100 my-6">
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">Foto do Item <span class="text-xs text-slate-400 font-normal">(opcional na edicao)</span></label>
+                                <div class="file-card">
+                                    <div class="space-y-1 text-center">
+                                        <i class="fa-solid fa-cloud-arrow-up text-3xl text-slate-400 mb-2 group-hover:text-secondary transition-colors"></i>
+                                        <div class="flex text-sm text-slate-600 justify-center">
+                                            <label for="cad_imagem" class="relative cursor-pointer rounded-md font-medium text-secondary hover:text-blue-600 focus-within:outline-none">
+                                                <span>Selecione uma imagem</span>
+                                                <input id="cad_imagem" name="cad_imagem" type="file" class="sr-only" accept="image/*">
+                                            </label>
+                                        </div>
+                                        <p id="cad_imagem_label" class="text-xs text-slate-500">PNG, JPG ate 5MB</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-semibold text-slate-700 mb-1">PDF da Nota Fiscal <span class="text-xs text-slate-400 font-normal">(opcional na edicao)</span></label>
+                                <div class="file-card">
+                                    <div class="space-y-1 text-center">
+                                        <i class="fa-solid fa-file-pdf text-3xl text-slate-400 mb-2 group-hover:text-secondary transition-colors"></i>
+                                        <div class="flex text-sm text-slate-600 justify-center">
+                                            <label for="cad_pdf" class="relative cursor-pointer rounded-md font-medium text-secondary hover:text-blue-600 focus-within:outline-none">
+                                                <span>Anexar PDF da NF</span>
+                                                <input id="cad_pdf" name="cad_pdf" type="file" class="sr-only" accept="application/pdf">
+                                            </label>
+                                        </div>
+                                        <p id="cad_pdf_label" class="text-xs text-slate-500">Apenas PDF ate 5MB</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col sm:flex-row justify-end gap-3 pt-4">
+                            <button type="button" id="btnLimparForm" class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-medium py-3 px-6 rounded-lg transition-all">
+                                <i class="fa-solid fa-eraser mr-2"></i> Limpar
+                            </button>
+
+                            <button type="submit" id="btnSalvarPatrimonio" class="bg-secondary hover:bg-blue-600 text-white font-medium py-3 px-8 rounded-lg shadow-md hover:shadow-lg transition-all flex items-center justify-center">
+                                <i class="fa-solid fa-save mr-2"></i> Salvar Patrimônio
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <!-- ================= VIEW: HISTORICO ================= -->
+            <section id="view-historico" class="view-section hidden animate-[fadeIn_0.3s_ease-out]">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-800">Historico de Movimentacoes</h2>
+                        <p class="text-slate-500 text-sm mt-1">Registro de cadastros, edicoes e baixas patrimoniais.</p>
+                    </div>
+
+                    <div class="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                        <div class="relative w-full md:w-72">
+                            <i class="fa-solid fa-search absolute left-3 top-3 text-slate-400"></i>
+                            <input type="text" id="historicoSearchInput" placeholder="Buscar no histórico..." class="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-secondary focus:border-transparent text-sm">
+                        </div>
+                        <button type="button" id="btnRecarregarHistorico" class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-medium py-2 px-4 rounded-lg transition-all">
+                            <i class="fa-solid fa-rotate-right mr-2"></i> Atualizar
+                        </button>
+                    </div>
+                </div>
+
+                <div id="historicoContainer" class="space-y-3"></div>
+            </section>
+
+            <!-- ================= VIEW: RELATORIOS ================= -->
+            <section id="view-relatorios" class="view-section hidden animate-[fadeIn_0.3s_ease-out]">
+                <div class="mb-8">
+                    <h2 class="text-2xl font-bold text-slate-800">Relatorios e Exportacoes</h2>
+                    <p class="text-slate-500 text-sm mt-1">Filtre os ativos e exporte para Excel/CSV ou impressao em PDF.</p>
+                </div>
+
+                <div class="bg-white rounded-xl p-5 shadow-sm border border-slate-200/60 mb-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Busca</label>
+                            <input type="text" id="relatorioBusca" placeholder="Plaqueta, item, local..." class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-secondary text-sm">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Classificacao</label>
+                            <select id="relatorioClassificacao" class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-secondary text-sm">
+                                <option value="">Todas</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Local</label>
+                            <select id="relatorioLocal" class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-secondary text-sm">
+                                <option value="">Todos</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Status</label>
+                            <select id="relatorioStatus" class="w-full px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-secondary text-sm">
+                                <option value="ativos">Ativos</option>
+                                <option value="defeito">Com defeito</option>
+                                <option value="inativos">Inativos</option>
+                                <option value="pendentes">Sem status / não padronizados</option>
+                                <option value="todos">Todos</option>
+                            </select>
+                        </div>
+
+                        <div class="flex items-end gap-2">
+                            <button type="button" id="btnExportarCSV" class="flex-1 bg-secondary hover:bg-blue-600 text-white font-medium py-2 px-3 rounded-lg transition-all text-sm">
+                                <i class="fa-solid fa-file-csv mr-1"></i> CSV
+                            </button>
+                            <button type="button" id="btnImprimirRelatorio" class="flex-1 bg-slate-800 hover:bg-slate-900 text-white font-medium py-2 px-3 rounded-lg transition-all text-sm">
+                                <i class="fa-solid fa-print mr-1"></i> PDF
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="filter-summary-grid grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div class="filter-summary-card filter-summary-items bg-white rounded-xl p-5 shadow-sm border border-slate-200/60">
+                        <div class="filter-summary-topline">
+                            <div class="filter-summary-icon"><i class="fa-regular fa-file-lines" aria-hidden="true"></i></div>
+                            <div class="filter-summary-change"><strong>Sem histórico</strong><span>vs. período anterior</span></div>
+                        </div>
+                        <p class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Itens Filtrados</p>
+                        <h3 id="relatorioTotalItens" class="text-2xl font-bold">0</h3>
+                        <p class="filter-summary-description">Itens que atendem aos filtros aplicados</p>
+                    </div>
+                    <div class="filter-summary-card filter-summary-value bg-white rounded-xl p-5 shadow-sm border border-slate-200/60">
+                        <div class="filter-summary-topline">
+                            <div class="filter-summary-icon"><i class="fa-solid fa-coins" aria-hidden="true"></i></div>
+                            <div class="filter-summary-change"><strong>Sem histórico</strong><span>vs. período anterior</span></div>
+                        </div>
+                        <p class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Valor Filtrado</p>
+                        <h3 id="relatorioValorTotal" class="text-2xl font-bold">R$ 0,00</h3>
+                        <p class="filter-summary-description">Valor total dos itens filtrados</p>
+                    </div>
+                    <div class="filter-summary-card filter-summary-locations bg-white rounded-xl p-5 shadow-sm border border-slate-200/60">
+                        <div class="filter-summary-topline">
+                            <div class="filter-summary-icon"><i class="fa-solid fa-location-dot" aria-hidden="true"></i></div>
+                            <div class="filter-summary-change"><strong>Sem histórico</strong><span>vs. período anterior</span></div>
+                        </div>
+                        <p class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Locais no Filtro</p>
+                        <h3 id="relatorioLocais" class="text-2xl font-bold">0</h3>
+                        <p class="filter-summary-description">Locais com itens no filtro</p>
+                    </div>
+                </div>
+
+                <div class="report-responsive-table bg-white rounded-xl shadow-sm border border-slate-200/60 overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full text-sm">
+                            <thead class="bg-slate-50 border-b border-slate-200">
+                                <tr>
+                                    <th class="px-4 py-3 text-left font-bold text-slate-500 uppercase tracking-wider text-xs">Plaqueta</th>
+                                    <th class="px-4 py-3 text-left font-bold text-slate-500 uppercase tracking-wider text-xs">Item</th>
+                                    <th class="px-4 py-3 text-left font-bold text-slate-500 uppercase tracking-wider text-xs">Classificacao</th>
+                                    <th class="px-4 py-3 text-left font-bold text-slate-500 uppercase tracking-wider text-xs">Local</th>
+                                    <th class="px-4 py-3 text-left font-bold text-slate-500 uppercase tracking-wider text-xs">Valor</th>
+                                    <th class="px-4 py-3 text-left font-bold text-slate-500 uppercase tracking-wider text-xs">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="relatorioTabela" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ================= MODAL DETALHES ================= -->
+    <div id="itemModal" class="fixed inset-0 z-[60] hidden flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onclick="closeModal()"></div>
+
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl relative z-10 overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <h3 class="text-lg font-bold text-slate-800 flex items-center">
+                    <i class="fa-solid fa-tag text-secondary mr-2"></i> Detalhes do Ativo
+                    <span id="modal-numero" class="ml-2 text-slate-500 font-mono text-sm bg-slate-200 px-2 py-0.5 rounded"></span>
+                </h3>
+                <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-accent transition-colors bg-white hover:bg-rose-50 rounded-full w-8 h-8 flex items-center justify-center">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <div class="p-6 overflow-y-auto">
+                <div class="flex flex-col md:flex-row gap-6">
+                    <div class="w-full md:w-2/5 flex flex-col items-center">
+                        <div class="w-full aspect-square bg-slate-50 rounded-xl flex items-center justify-center border border-slate-200 overflow-hidden shadow-inner mb-4 relative group">
+                            <img id="modal-imagem" src="https://placehold.co/400x400/f8fafc/64748b?text=Sem+Foto" alt="Foto do Item" class="object-cover w-full h-full transition-transform duration-300 group-hover:scale-105">
+                        </div>
+
+                        <button type="button" id="modal-btn-nf" class="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-900 text-white text-sm font-medium rounded-lg transition-colors flex items-center justify-center shadow-md">
+                            <i class="fa-solid fa-file-pdf text-accent mr-2"></i> Visualizar Nota Fiscal
+                        </button>
+                    </div>
+
+                    <div class="w-full md:w-3/5 space-y-4">
+                        <div>
+                            <h4 class="text-xl font-bold text-slate-800 leading-tight" id="modal-item">-</h4>
+                            <span class="inline-block mt-2 px-2.5 py-1 bg-blue-50 border border-blue-100 text-secondary text-xs font-bold rounded-md uppercase tracking-wide" id="modal-classificacao">-</span>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-4 pt-2">
+                            <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Localizacao</p>
+                                <p class="font-semibold text-slate-800 text-sm flex items-start"><i class="fa-solid fa-location-dot text-secondary mt-0.5 mr-1.5"></i> <span id="modal-local">-</span></p>
+                            </div>
+
+                            <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Valor</p>
+                                <p class="font-bold text-emerald-600 text-lg" id="modal-preco">R$ 0,00</p>
+                            </div>
+
+                            <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Data da Compra</p>
+                                <p class="font-semibold text-slate-800 text-sm" id="modal-data">-</p>
+                            </div>
+
+                            <div class="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Número NF</p>
+                                <p class="font-semibold text-slate-800 text-sm" id="modal-nf">-</p>
+                            </div>
+
+                            <div class="bg-slate-50 p-3 rounded-lg border border-slate-100 col-span-2 flex justify-between items-center">
+                                <div>
+                                    <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Pagamento</p>
+                                    <p class="font-semibold text-slate-800 text-sm" id="modal-pagamento">-</p>
+                                </div>
+                                <i class="fa-brands fa-pix text-emerald-500 text-2xl opacity-20" id="modal-icon-pagamento"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="px-6 py-4 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row justify-end gap-3">
+                <button type="button" id="modal-btn-editar" class="bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-medium px-4 py-2.5 rounded-lg transition-all">
+                    <i class="fa-solid fa-pen-to-square mr-2"></i> Editar
+                </button>
+                <button type="button" id="modal-btn-baixa" class="bg-rose-600 hover:bg-rose-700 text-white font-medium px-4 py-2.5 rounded-lg transition-all">
+                    <i class="fa-solid fa-box-archive mr-2"></i> Dar baixa
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= MODAL BAIXA ================= -->
+    <div id="baixaModal" class="fixed inset-0 z-[70] hidden flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-opacity" onclick="closeBaixaModal()"></div>
+
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg relative z-10 overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <h3 class="text-lg font-bold text-slate-800">
+                    <i class="fa-solid fa-box-archive text-accent mr-2"></i> Dar baixa no ativo
+                </h3>
+                <button type="button" onclick="closeBaixaModal()" class="text-slate-400 hover:text-accent transition-colors bg-white hover:bg-rose-50 rounded-full w-8 h-8 flex items-center justify-center">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <form id="formBaixa" class="p-6 space-y-4">
+                <input type="hidden" id="baixa_ativo_id">
+
+                <div class="bg-rose-50 border border-rose-100 text-rose-700 rounded-lg p-4 text-sm">
+                    Esta acao remove o item da listagem de ativos e mantem o registro para relatorios e historico.
+                </div>
+
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">Motivo da baixa</label>
+                    <textarea id="baixa_motivo" rows="4" required class="w-full px-4 py-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-accent/40 focus:border-accent focus:outline-none transition-colors bg-slate-50 focus:bg-white" placeholder="Ex: vendido, substituido, quebrado, transferido..."></textarea>
+                </div>
+
+                <div class="flex justify-end gap-3">
+                    <button type="button" onclick="closeBaixaModal()" class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-medium py-2.5 px-4 rounded-lg transition-all">
+                        Cancelar
+                    </button>
+                    <button type="submit" id="btnConfirmarBaixa" class="bg-rose-600 hover:bg-rose-700 text-white font-medium py-2.5 px-5 rounded-lg transition-all">
+                        <i class="fa-solid fa-check mr-2"></i> Confirmar baixa
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ================= TOAST ================= -->
+    <div id="toast" class="fixed bottom-6 right-6 bg-slate-800 text-white px-6 py-4 rounded-xl shadow-2xl transform transition-all duration-300 translate-y-20 opacity-0 z-[90] flex items-center border border-slate-700 max-w-[calc(100vw-2rem)]">
+        <div class="bg-emerald-500 rounded-full w-8 h-8 flex items-center justify-center mr-3 flex-shrink-0">
+            <i class="fa-solid fa-check text-white"></i>
+        </div>
+        <span id="toast-msg" class="font-medium text-sm">Operacao realizada com sucesso!</span>
+    </div>
+
+    <!-- ================= PERFIL DE CONFIGURACAO ================= -->
+    <div id="adminConfigModal" class="fixed inset-0 z-[80] hidden items-center justify-center p-4">
+        <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" data-close-admin-config></div>
+        <div class="relative z-10 max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-6 py-4">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-800"><i class="fa-solid fa-gear mr-2 text-secondary"></i>Perfil de configuração</h2>
+                    <p class="mt-1 text-xs text-slate-500">Configuração administrativa protegida no servidor.</p>
+                </div>
+                <button type="button" class="flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-400 hover:bg-rose-50 hover:text-accent" data-close-admin-config aria-label="Fechar">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <form id="adminConfigForm" class="space-y-4 p-6">
+                <div>
+                    <label for="config_profile_name" class="mb-1 block text-sm font-semibold text-slate-700">Nome do ambiente</label>
+                    <input id="config_profile_name" type="text" maxlength="80" required class="block w-full rounded-lg border border-slate-300 px-3 py-2.5 text-slate-800 outline-none focus:border-secondary focus:ring-4 focus:ring-blue-100" placeholder="Produção">
+                </div>
+
+                <div>
+                    <label for="config_project_url" class="mb-1 block text-sm font-semibold text-slate-700">URL do projeto Supabase</label>
+                    <input id="config_project_url" type="url" inputmode="url" autocomplete="off" required class="block w-full rounded-lg border border-slate-300 px-3 py-2.5 text-slate-800 outline-none focus:border-secondary focus:ring-4 focus:ring-blue-100" placeholder="https://seu-projeto.supabase.co">
+                </div>
+
+                <div>
+                    <label for="config_schema" class="mb-1 block text-sm font-semibold text-slate-700">Schema</label>
+                    <input id="config_schema" type="text" maxlength="63" autocomplete="off" required class="block w-full rounded-lg border border-slate-300 px-3 py-2.5 text-slate-800 outline-none focus:border-secondary focus:ring-4 focus:ring-blue-100" placeholder="gestao_patrimonial">
+                </div>
+
+                <div>
+                    <label for="config_service_role" class="mb-1 block text-sm font-semibold text-slate-700">Service role (opcional para atualizar)</label>
+                    <input id="config_service_role" type="password" autocomplete="off" spellcheck="false" class="block w-full rounded-lg border border-slate-300 px-3 py-2.5 font-mono text-sm text-slate-800 outline-none focus:border-secondary focus:ring-4 focus:ring-blue-100" placeholder="Cole somente para substituir a chave atual">
+                    <p class="mt-1.5 text-xs text-amber-700">A chave nunca é exibida nem devolvida ao navegador. Ela é enviada somente por HTTPS e armazenada cifrada no servidor.</p>
+                </div>
+
+                <p id="adminConfigStatus" class="hidden rounded-lg px-3 py-2.5 text-sm" role="status" aria-live="polite"></p>
+
+                <div class="flex flex-col-reverse gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
+                    <button type="button" class="rounded-lg border border-slate-200 bg-white px-4 py-2.5 font-medium text-slate-700 hover:bg-slate-50" data-close-admin-config>Cancelar</button>
+                    <button id="btnSaveAdminConfig" type="submit" class="rounded-lg bg-secondary px-5 py-2.5 font-semibold text-white hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-70">Salvar configuração</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    </div>
+    <!-- App JS: carregado uma unica vez; Supabase JS ja esta no <head>. -->
+<script src="./app.js"></script>
+</body>
+</html>

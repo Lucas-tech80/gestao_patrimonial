@@ -1,0 +1,1617 @@
+/**
+ * Gestão Patrimonial MHS
+ * Arquivo principal da aplicação.
+ * Dependências no index.html: Supabase JS, Chart.js, Tailwind e Font Awesome.
+ */
+
+// ================= CONFIGURAÇÃO =================
+
+// O cliente JS usa a URL base do projeto, sem /rest/v1/.
+const SUPABASE_URL = 'https://imdwkxhbcohyyczhvsil.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImltZHdreGhiY29oeXljemh2c2lsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3NTYyMDQsImV4cCI6MjEwMzMzMjIwNH0.j0Gb8UB5ZmNNZMAudiEvjK8XcZLWLzvPFbDurwtmMZM';
+
+const SUPABASE_SCHEMA = 'gestao_patrimonial';
+const TABLE_PATRIMONIOS = 'patrimonios';
+const READ_ONLY_MODE = true;
+const TABLE_HISTORICO = 'patrimonios_historico';
+const BUCKET_FOTOS = 'patrimonios-fotos';
+const BUCKET_NFS = 'patrimonios-nfs';
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+// ================= ESTADO GLOBAL =================
+
+let supabaseClient = null;
+const DIRECT_ACCESS_USER = {
+    id: 'acesso-direto',
+    email: 'Acesso direto'
+};
+let currentUser = DIRECT_ACCESS_USER;
+let todosAtivosData = [];
+let ativosData = [];
+let historicoData = [];
+let currentView = 'dashboard';
+let isLoadingAtivos = false;
+let isLoadingHistorico = false;
+let editingAtivoId = null;
+let activeModalAtivoId = null;
+let chartClassificacaoInstance = null;
+let chartLocalInstance = null;
+let authSubscription = null;
+
+// ================= HELPERS =================
+
+const getEl = (id) => document.getElementById(id);
+
+const formatMoney = (value) => {
+    const numberValue = Number(value || 0);
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(numberValue);
+};
+
+const formatDate = (dateString) => {
+    if (!dateString) return '-';
+
+    const value = String(dateString).trim();
+
+    if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+        const [year, month, day] = value.slice(0, 10).split('-');
+        return `${day}/${month}/${year}`;
+    }
+
+    if (/^\d{2}\/\d{2}\/\d{4}/.test(value)) {
+        return value.slice(0, 10);
+    }
+
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) {
+        return date.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
+    }
+
+    return value;
+};
+
+const formatDateTime = (dateString) => {
+    if (!dateString) return '-';
+
+    const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return String(dateString);
+
+    return new Intl.DateTimeFormat('pt-BR', {
+        dateStyle: 'short',
+        timeStyle: 'short'
+    }).format(date);
+};
+
+const normalizeNumero = (value) => {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits ? digits.padStart(4, '0') : '';
+};
+
+const normalizeAtivo = (ativo) => ({
+    id: ativo.id,
+    numero: normalizeNumero(ativo.numero),
+    item: ativo.item || '',
+    classificacao: ativo.classificacao || 'Outros',
+    data: ativo.data || ativo.data_compra || null,
+    nf: ativo.nf || 'S/NF',
+    preco: Number(ativo.preco || 0),
+    local: ativo.local || 'Sem local definido',
+    pagamento: ativo.pagamento || 'Não informado',
+    img_url: ativo.img_url || null,
+    pdf_url: ativo.pdf_url || null,
+    ativo: ativo.ativo !== false
+});
+
+const parseSupabaseError = (error) => {
+    if (!error) return 'Erro desconhecido.';
+    if (error.message) return error.message;
+    if (error.details) return error.details;
+    if (typeof error === 'string') return error;
+    return 'Não foi possível concluir a operação.';
+};
+
+const escapeHTML = (value) => {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+};
+
+const truncateText = (value, size = 120) => {
+    const text = String(value || '');
+    return text.length > size ? `${text.slice(0, size)}...` : text;
+};
+
+const setButtonLoading = (button, loading, loadingText = 'Carregando...') => {
+    if (!button) return;
+
+    if (loading) {
+        button.dataset.originalHtml = button.innerHTML;
+        button.disabled = true;
+        button.classList.add('opacity-70', 'cursor-not-allowed');
+        button.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-2"></i> ${loadingText}`;
+        return;
+    }
+
+    button.disabled = false;
+    button.classList.remove('opacity-70', 'cursor-not-allowed');
+    if (button.dataset.originalHtml) {
+        button.innerHTML = button.dataset.originalHtml;
+        delete button.dataset.originalHtml;
+    }
+};
+
+const updateLocalData = (ativoAtualizado) => {
+    const normalized = normalizeAtivo(ativoAtualizado);
+    const index = todosAtivosData.findIndex((item) => Number(item.id) === Number(normalized.id));
+
+    if (index >= 0) {
+        todosAtivosData[index] = normalized;
+    } else {
+        todosAtivosData.push(normalized);
+    }
+
+    todosAtivosData.sort((a, b) => a.numero.localeCompare(b.numero, 'pt-BR', { numeric: true }));
+    ativosData = todosAtivosData.filter((ativo) => ativo.ativo);
+};
+
+const buildDiff = (antes, depois, keys) => {
+    const diff = {};
+
+    keys.forEach((key) => {
+        const oldValue = antes?.[key] ?? '';
+        const newValue = depois?.[key] ?? '';
+
+        if (String(oldValue) !== String(newValue)) {
+            diff[key] = { antes: oldValue, depois: newValue };
+        }
+    });
+
+    return diff;
+};
+
+// ================= STATUS / TOAST =================
+
+function setConnectionStatus(status, customMessage = '') {
+    const statusEl = getEl('connectionStatus');
+    const pingEl = getEl('connectionPing');
+    const dotEl = getEl('connectionDot');
+
+    if (!statusEl || !pingEl || !dotEl) return;
+
+    const basePing = 'animate-ping absolute inline-flex h-full w-full rounded-full opacity-75';
+    const baseDot = 'relative inline-flex rounded-full h-2.5 w-2.5';
+
+    if (status === 'connected') {
+        statusEl.textContent = customMessage || 'Conectado';
+        statusEl.className = 'text-xs font-semibold text-emerald-600';
+        pingEl.className = `${basePing} bg-emerald-400`;
+        dotEl.className = `${baseDot} bg-emerald-500`;
+        return;
+    }
+
+    if (status === 'error') {
+        statusEl.textContent = customMessage || 'Erro de conexão';
+        statusEl.className = 'text-xs font-semibold text-rose-600';
+        pingEl.className = `${basePing} bg-rose-400`;
+        dotEl.className = `${baseDot} bg-rose-500`;
+        return;
+    }
+
+    statusEl.textContent = customMessage || 'Conectando...';
+    statusEl.className = 'text-xs font-semibold text-blue-600';
+    pingEl.className = `${basePing} bg-blue-400`;
+    dotEl.className = `${baseDot} bg-blue-500`;
+}
+
+function showToast(msg, type = 'success') {
+    const toast = getEl('toast');
+    if (!toast) return;
+
+    const iconBox = toast.querySelector('div');
+    const icon = iconBox.querySelector('i');
+
+    getEl('toast-msg').textContent = msg;
+
+    if (type === 'error') {
+        iconBox.className = 'bg-rose-500 rounded-full w-8 h-8 flex items-center justify-center mr-3 flex-shrink-0';
+        icon.className = 'fa-solid fa-triangle-exclamation text-white';
+    } else if (type === 'warning') {
+        iconBox.className = 'bg-amber-500 rounded-full w-8 h-8 flex items-center justify-center mr-3 flex-shrink-0';
+        icon.className = 'fa-solid fa-circle-exclamation text-white';
+    } else {
+        iconBox.className = 'bg-emerald-500 rounded-full w-8 h-8 flex items-center justify-center mr-3 flex-shrink-0';
+        icon.className = 'fa-solid fa-check text-white';
+    }
+
+    toast.classList.remove('translate-y-20', 'opacity-0');
+
+    window.clearTimeout(toast.dataset.timeoutId);
+    const timeoutId = window.setTimeout(() => {
+        toast.classList.add('translate-y-20', 'opacity-0');
+    }, 4200);
+
+    toast.dataset.timeoutId = timeoutId;
+}
+
+// ================= SUPABASE / AUTH =================
+
+function initSupabaseClient() {
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+        throw new Error('Biblioteca do Supabase não carregou. Verifique sua conexão com a internet/CDN.');
+    }
+
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+        db: { schema: SUPABASE_SCHEMA },
+        auth: {
+            persistSession: true,
+            autoRefreshToken: true,
+            detectSessionInUrl: true
+        },
+        global: {
+            headers: {
+                'x-client-info': 'mhs-gestao-patrimonial-web'
+            }
+        }
+    });
+}
+
+async function handleAuthState(session = null) {
+    currentUser = DIRECT_ACCESS_USER;
+
+    const authView = getEl('authView');
+    const appShell = getEl('appShell');
+    const userEmailLabel = getEl('userEmailLabel');
+    const logoutBtn = getEl('logoutBtn');
+    const mobileLogoutBtn = getEl('mobileLogoutBtn');
+
+    authView?.classList.add('hidden');
+    authView?.classList.remove('flex');
+
+    appShell?.classList.remove('hidden');
+    appShell?.classList.add('flex');
+    appShell?.classList.add('flex-col');
+
+    logoutBtn?.classList.add('hidden');
+    mobileLogoutBtn?.classList.add('hidden');
+
+    if (userEmailLabel) {
+        userEmailLabel.textContent = currentUser.email;
+    }
+
+    setConnectionStatus('connected', 'Conectado ao Supabase');
+    await carregarAtivos();
+    await carregarHistorico({ silent: true });
+    navigate(currentView || 'dashboard');
+}
+
+async function loginUsuario(event) {
+    event.preventDefault();
+
+    const button = getEl('btnLogin');
+
+    try {
+        setButtonLoading(button, true, 'Entrando...');
+
+        const email = getEl('login_email')?.value.trim() || '';
+        const password = getEl('login_password')?.value || '';
+
+        if (!email || !password) {
+            throw new Error('Informe e-mail e senha.');
+        }
+
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+
+        await handleAuthState(data.session);
+        showToast('Login realizado com sucesso!');
+    } catch (error) {
+        console.error('Erro no login:', error);
+        showToast(`Erro ao entrar: ${parseSupabaseError(error)}`, 'error');
+    } finally {
+        setButtonLoading(button, false);
+    }
+}
+
+async function criarUsuario() {
+    const button = getEl('btnSignup');
+
+    try {
+        setButtonLoading(button, true, 'Criando...');
+
+        const email = getEl('login_email')?.value.trim() || '';
+        const password = getEl('login_password')?.value || '';
+
+        if (!email || !password) {
+            throw new Error('Informe e-mail e senha para criar o acesso.');
+        }
+
+        const { data, error } = await supabaseClient.auth.signUp({ email, password });
+        if (error) throw error;
+
+        if (data.session) {
+            await handleAuthState(data.session);
+            showToast('Acesso criado e login realizado.');
+        } else {
+            showToast('Acesso criado. Verifique o e-mail de confirmação, se estiver habilitado.', 'warning');
+        }
+    } catch (error) {
+        console.error('Erro ao criar usuário:', error);
+        showToast(`Erro ao criar acesso: ${parseSupabaseError(error)}`, 'error');
+    } finally {
+        setButtonLoading(button, false);
+    }
+}
+
+async function logoutUsuario() {
+    closeModal();
+    closeBaixaModal();
+    await handleAuthState(null);
+    showToast('Login removido. A aplicação permanece em acesso direto.', 'warning');
+}
+
+// ================= DADOS =================
+
+async function carregarAtivos({ silent = false } = {}) {
+    if (!supabaseClient) return [];
+
+    try {
+        isLoadingAtivos = true;
+        setConnectionStatus('loading', 'Carregando dados...');
+
+        if (!silent && currentView === 'ativos') {
+            renderAtivosList(getEl('searchInput')?.value || '');
+        }
+
+        const { data, error } = await supabaseClient
+            .from(TABLE_PATRIMONIOS)
+            .select('id, numero, item, classificacao, data_compra, nf, preco, local, pagamento, img_url, pdf_url, ativo')
+            .order('numero', { ascending: true })
+            .limit(10000);
+
+        if (error) throw error;
+
+        todosAtivosData = (data || []).map(normalizeAtivo);
+        ativosData = todosAtivosData.filter((ativo) => ativo.ativo);
+
+        setConnectionStatus('connected');
+        initDashboard();
+        popularFiltrosRelatorios();
+        renderRelatorios();
+
+        if (currentView === 'ativos') {
+            renderAtivosList(getEl('searchInput')?.value || '');
+        }
+
+        return todosAtivosData;
+    } catch (error) {
+        console.error('Erro ao carregar ativos:', error);
+        setConnectionStatus('error');
+        initDashboard();
+
+        if (currentView === 'ativos') {
+            renderAtivosList(getEl('searchInput')?.value || '');
+        }
+
+        showToast(`Erro ao carregar dados: ${parseSupabaseError(error)}`, 'error');
+        return [];
+    } finally {
+        isLoadingAtivos = false;
+    }
+}
+
+async function carregarHistorico({ silent = false } = {}) {
+    // Somente a tabela patrimonios foi informada; nenhuma tabela adicional e consultada.
+    historicoData = [];
+    isLoadingHistorico = false;
+    if (!silent && currentView === 'historico') renderHistorico();
+    return historicoData;
+}async function verificarNumeroDisponivel(numero, ignorarId = null) {
+    let query = supabaseClient
+        .from(TABLE_PATRIMONIOS)
+        .select('id')
+        .eq('numero', numero);
+
+    if (ignorarId) {
+        query = query.neq('id', ignorarId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error) throw error;
+    if (data) throw new Error('Já existe um patrimônio com essa plaqueta.');
+}
+
+async function uploadStorageFile(bucket, file, numero, tipo) {
+    if (!file) return null;
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+        throw new Error(`O arquivo "${file.name}" ultrapassa o limite de 5MB.`);
+    }
+
+    if (tipo === 'imagem' && !file.type.startsWith('image/')) {
+        throw new Error('A foto precisa ser uma imagem válida.');
+    }
+
+    if (tipo === 'pdf' && file.type !== 'application/pdf') {
+        throw new Error('A nota fiscal precisa ser um arquivo PDF.');
+    }
+
+    const extension = (file.name.split('.').pop() || (tipo === 'pdf' ? 'pdf' : 'jpg'))
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+
+    const filePath = `${numero}/${tipo}-${Date.now()}.${extension}`;
+
+    const { data, error } = await supabaseClient.storage
+        .from(bucket)
+        .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: false,
+            contentType: file.type
+        });
+
+    if (error) throw error;
+
+    if (bucket === BUCKET_FOTOS) {
+        const { data: publicData } = supabaseClient.storage
+            .from(bucket)
+            .getPublicUrl(data.path);
+
+        return publicData.publicUrl;
+    }
+
+    return data.path;
+}
+
+async function abrirNotaFiscal(ativo) {
+    try {
+        if (!ativo?.pdf_url) {
+            showToast('Nenhuma nota fiscal anexada para este ativo.', 'warning');
+            return;
+        }
+
+        if (/^https?:\/\//i.test(ativo.pdf_url)) {
+            window.open(ativo.pdf_url, '_blank', 'noopener,noreferrer');
+            return;
+        }
+
+        const { data, error } = await supabaseClient.storage
+            .from(BUCKET_NFS)
+            .createSignedUrl(ativo.pdf_url, 60 * 60);
+
+        if (error) throw error;
+
+        window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+        console.error('Erro ao abrir nota fiscal:', error);
+        showToast(`Erro ao abrir NF: ${parseSupabaseError(error)}`, 'error');
+    }
+}
+
+async function registrarHistorico({ patrimonioId, numero, item, acao, descricao, antes = null, depois = null }) {
+    if (!supabaseClient) return;
+
+    try {
+        const payload = {
+            patrimonio_id: patrimonioId || null,
+            numero: numero || null,
+            item: item || null,
+            acao,
+            descricao,
+            dados_antes: antes,
+            dados_depois: depois,
+            usuario_email: currentUser.email || null
+        };
+
+        const { error } = await supabaseClient
+            .from(TABLE_HISTORICO)
+            .insert(payload);
+
+        if (error) throw error;
+
+        await carregarHistorico({ silent: true });
+    } catch (error) {
+        console.warn('Não foi possível registrar histórico:', error);
+    }
+}
+
+// ================= CADASTRO / EDIÇÃO =================
+
+function getFormPayload() {
+    const numero = normalizeNumero(getEl('cad_numero').value);
+    const item = getEl('cad_item').value.trim();
+    const classificacao = getEl('cad_classificacao').value.trim();
+    const local = getEl('cad_local').value.trim();
+    const dataCompra = getEl('cad_data').value;
+    const preco = Number(getEl('cad_preco').value);
+    const nf = getEl('cad_nf').value.trim() || 'S/NF';
+    const pagamento = getEl('cad_pagamento').value.trim() || 'Não informado';
+
+    if (!numero) throw new Error('Informe uma plaqueta válida.');
+    if (!item) throw new Error('Informe a descrição do item.');
+    if (!classificacao) throw new Error('Selecione uma classificação.');
+    if (!local) throw new Error('Informe o local alocado.');
+    if (!dataCompra) throw new Error('Informe a data da compra.');
+    if (!Number.isFinite(preco) || preco < 0) throw new Error('Informe um preço válido.');
+
+    return {
+        numero,
+        item,
+        classificacao,
+        data_compra: dataCompra,
+        nf,
+        preco,
+        local,
+        pagamento
+    };
+}
+
+async function cadastrarOuEditarAtivo(event) {
+    event.preventDefault();
+
+    const submitButton = getEl('btnSalvarPatrimonio');
+
+    try {
+        setButtonLoading(submitButton, true, editingAtivoId ? 'Atualizando...' : 'Salvando...');
+
+        const payload = getFormPayload();
+        const imagemFile = getEl('cad_imagem').files[0] || null;
+        const pdfFile = getEl('cad_pdf').files[0] || null;
+
+        if (editingAtivoId) {
+            await atualizarAtivo(payload, imagemFile, pdfFile);
+            return;
+        }
+
+        await criarAtivo(payload, imagemFile, pdfFile);
+    } catch (error) {
+        console.error('Erro ao salvar ativo:', error);
+        showToast(`Erro ao salvar: ${parseSupabaseError(error)}`, 'error');
+    } finally {
+        setButtonLoading(submitButton, false);
+    }
+}
+
+async function criarAtivo(payload, imagemFile, pdfFile) {
+    await verificarNumeroDisponivel(payload.numero);
+
+    let imgUrl = null;
+    let pdfUrl = null;
+
+    try {
+        imgUrl = await uploadStorageFile(BUCKET_FOTOS, imagemFile, payload.numero, 'imagem');
+        pdfUrl = await uploadStorageFile(BUCKET_NFS, pdfFile, payload.numero, 'pdf');
+
+        const insertPayload = {
+            ...payload,
+            img_url: imgUrl,
+            pdf_url: pdfUrl,
+            ativo: true
+        };
+
+        const { data, error } = await supabaseClient
+            .from(TABLE_PATRIMONIOS)
+            .insert(insertPayload)
+            .select('id, numero, item, classificacao, data_compra, nf, preco, local, pagamento, img_url, pdf_url, ativo')
+            .single();
+
+        if (error) throw error;
+
+        const novoAtivo = normalizeAtivo(data);
+        updateLocalData(novoAtivo);
+
+        await registrarHistorico({
+            patrimonioId: novoAtivo.id,
+            numero: novoAtivo.numero,
+            item: novoAtivo.item,
+            acao: 'cadastro',
+            descricao: `Ativo ${novoAtivo.numero} cadastrado.`,
+            depois: novoAtivo
+        });
+
+        showToast('Ativo cadastrado com sucesso!');
+        resetCadastroForm();
+        initDashboard();
+        popularFiltrosRelatorios();
+        renderRelatorios();
+        navigate('ativos');
+    } catch (error) {
+        throw error;
+    }
+}
+
+async function atualizarAtivo(payload, imagemFile, pdfFile) {
+    const ativoOriginal = todosAtivosData.find((ativo) => Number(ativo.id) === Number(editingAtivoId));
+    if (!ativoOriginal) throw new Error('Ativo em edição não encontrado.');
+
+    await verificarNumeroDisponivel(payload.numero, editingAtivoId);
+
+    const updatePayload = { ...payload };
+
+    if (imagemFile) {
+        updatePayload.img_url = await uploadStorageFile(BUCKET_FOTOS, imagemFile, payload.numero, 'imagem');
+    }
+
+    if (pdfFile) {
+        updatePayload.pdf_url = await uploadStorageFile(BUCKET_NFS, pdfFile, payload.numero, 'pdf');
+    }
+
+    const { data, error } = await supabaseClient
+        .from(TABLE_PATRIMONIOS)
+        .update(updatePayload)
+        .eq('id', editingAtivoId)
+        .select('id, numero, item, classificacao, data_compra, nf, preco, local, pagamento, img_url, pdf_url, ativo')
+        .single();
+
+    if (error) throw error;
+
+    const ativoAtualizado = normalizeAtivo(data);
+    updateLocalData(ativoAtualizado);
+
+    const diferencas = buildDiff(ativoOriginal, ativoAtualizado, [
+        'numero',
+        'item',
+        'classificacao',
+        'data',
+        'nf',
+        'preco',
+        'local',
+        'pagamento',
+        'img_url',
+        'pdf_url'
+    ]);
+
+    await registrarHistorico({
+        patrimonioId: ativoAtualizado.id,
+        numero: ativoAtualizado.numero,
+        item: ativoAtualizado.item,
+        acao: 'edicao',
+        descricao: Object.keys(diferencas).length
+            ? `Ativo ${ativoAtualizado.numero} editado.`
+            : `Ativo ${ativoAtualizado.numero} salvo sem alterações visíveis.`,
+        antes: ativoOriginal,
+        depois: ativoAtualizado
+    });
+
+    showToast('Ativo atualizado com sucesso!');
+    resetCadastroForm();
+    initDashboard();
+    popularFiltrosRelatorios();
+    renderRelatorios();
+    navigate('ativos');
+}
+
+function startEditAtivo(id) {
+    const ativo = todosAtivosData.find((item) => Number(item.id) === Number(id));
+    if (!ativo) {
+        showToast('Ativo não encontrado para edição.', 'error');
+        return;
+    }
+
+    editingAtivoId = Number(ativo.id);
+    getEl('cad_editing_id').value = ativo.id;
+    getEl('cad_numero').value = ativo.numero;
+    getEl('cad_item').value = ativo.item;
+    getEl('cad_classificacao').value = ativo.classificacao;
+    getEl('cad_local').value = ativo.local;
+    getEl('cad_data').value = ativo.data ? String(ativo.data).slice(0, 10) : '';
+    getEl('cad_preco').value = ativo.preco;
+    getEl('cad_nf').value = ativo.nf === 'S/NF' ? '' : ativo.nf;
+    getEl('cad_pagamento').value = ativo.pagamento;
+
+    getEl('cadastroTitle').textContent = `Editar Ativo Nº ${ativo.numero}`;
+    getEl('cadastroSubtitle').textContent = 'Atualize os dados do patrimônio selecionado.';
+    getEl('btnSalvarPatrimonio').innerHTML = '<i class="fa-solid fa-floppy-disk mr-2"></i> Atualizar Patrimônio';
+    getEl('btnCancelarEdicao').classList.remove('hidden');
+
+    getEl('cad_imagem_label').textContent = ativo.img_url ? 'Foto atual mantida. Selecione outra para substituir.' : 'PNG, JPG até 5MB';
+    getEl('cad_pdf_label').textContent = ativo.pdf_url ? 'PDF atual mantido. Selecione outro para substituir.' : 'Apenas PDF até 5MB';
+
+    closeModal();
+    navigate('cadastro');
+}
+
+function resetCadastroForm() {
+    editingAtivoId = null;
+
+    const form = getEl('formCadastro');
+    if (form) form.reset();
+
+    getEl('cad_editing_id').value = '';
+    getEl('cadastroTitle').textContent = 'Registrar Novo Ativo';
+    getEl('cadastroSubtitle').textContent = 'Insira os dados do novo patrimônio para o banco de dados.';
+    getEl('btnSalvarPatrimonio').innerHTML = '<i class="fa-solid fa-save mr-2"></i> Salvar Patrimônio';
+    getEl('btnCancelarEdicao').classList.add('hidden');
+    getEl('cad_imagem_label').textContent = 'PNG, JPG até 5MB';
+    getEl('cad_pdf_label').textContent = 'Apenas PDF até 5MB';
+}
+
+// ================= BAIXA =================
+
+function openBaixaModal(id) {
+    const ativo = todosAtivosData.find((item) => Number(item.id) === Number(id));
+    if (!ativo) {
+        showToast('Ativo não encontrado para baixa.', 'error');
+        return;
+    }
+
+    getEl('baixa_ativo_id').value = ativo.id;
+    getEl('baixa_motivo').value = '';
+    getEl('baixaModal').classList.remove('hidden');
+}
+
+function closeBaixaModal() {
+    getEl('baixaModal')?.classList.add('hidden');
+}
+
+async function confirmarBaixa(event) {
+    event.preventDefault();
+
+    const button = getEl('btnConfirmarBaixa');
+
+    try {
+        setButtonLoading(button, true, 'Baixando...');
+
+        const id = Number(getEl('baixa_ativo_id').value);
+        const motivo = getEl('baixa_motivo').value.trim();
+        const ativoOriginal = todosAtivosData.find((ativo) => Number(ativo.id) === id);
+
+        if (!ativoOriginal) throw new Error('Ativo não encontrado.');
+        if (!motivo) throw new Error('Informe o motivo da baixa.');
+
+        const { data, error } = await supabaseClient
+            .from(TABLE_PATRIMONIOS)
+            .update({ ativo: false })
+            .eq('id', id)
+            .select('id, numero, item, classificacao, data_compra, nf, preco, local, pagamento, img_url, pdf_url, ativo')
+            .single();
+
+        if (error) throw error;
+
+        const ativoBaixado = normalizeAtivo(data);
+        updateLocalData(ativoBaixado);
+
+        await registrarHistorico({
+            patrimonioId: ativoBaixado.id,
+            numero: ativoBaixado.numero,
+            item: ativoBaixado.item,
+            acao: 'baixa',
+            descricao: `Ativo ${ativoBaixado.numero} baixado. Motivo: ${motivo}`,
+            antes: ativoOriginal,
+            depois: { ...ativoBaixado, motivo_baixa: motivo }
+        });
+
+        closeBaixaModal();
+        closeModal();
+        showToast('Ativo baixado com sucesso.');
+        initDashboard();
+        popularFiltrosRelatorios();
+        renderRelatorios();
+
+        if (currentView === 'ativos') {
+            renderAtivosList(getEl('searchInput')?.value || '');
+        }
+    } catch (error) {
+        console.error('Erro ao dar baixa:', error);
+        showToast(`Erro ao dar baixa: ${parseSupabaseError(error)}`, 'error');
+    } finally {
+        setButtonLoading(button, false);
+    }
+}
+
+// ================= NAVEGAÇÃO =================
+
+function navigate(viewId) {
+    currentView = viewId;
+
+    document.querySelectorAll('.view-section').forEach((el) => {
+        el.classList.add('hidden');
+        el.classList.remove('block');
+    });
+
+    const targetView = getEl(`view-${viewId}`);
+    if (targetView) {
+        targetView.classList.remove('hidden');
+        targetView.classList.add('block');
+    }
+
+    document.querySelectorAll('.nav-btn').forEach((btn) => {
+        if (btn.dataset.target === viewId) {
+            btn.classList.add('bg-blue-50', 'text-secondary', 'border-blue-100');
+            btn.classList.remove('text-slate-600', 'hover:bg-slate-100', 'hover:text-slate-900', 'hover:bg-white', 'border-transparent');
+        } else {
+            btn.classList.remove('bg-blue-50', 'text-secondary', 'border-blue-100');
+            btn.classList.add('text-slate-600', 'hover:bg-slate-100', 'hover:text-slate-900');
+
+            if (btn.parentElement?.id === 'mobileNav') {
+                btn.classList.add('hover:bg-white', 'border-transparent');
+                btn.classList.remove('hover:bg-slate-100');
+            }
+        }
+    });
+
+    const mobileNav = getEl('mobileNav');
+    if (mobileNav && !mobileNav.classList.contains('hidden')) {
+        mobileNav.classList.add('hidden');
+    }
+
+    if (viewId === 'dashboard') initDashboard();
+    if (viewId === 'ativos') renderAtivosList(getEl('searchInput')?.value || '');
+    if (viewId === 'historico') {
+        if (!historicoData.length) carregarHistorico();
+        else renderHistorico();
+    }
+    if (viewId === 'relatorios') {
+        popularFiltrosRelatorios();
+        renderRelatorios();
+    }
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ================= DASHBOARD =================
+
+function initDashboard() {
+    const idsIncluidos = new Set();
+    const itensResumo = todosAtivosData.filter((ativo) => {
+        if (ativo?.id === null || ativo?.id === undefined || idsIncluidos.has(ativo.id)) return false;
+
+        idsIncluidos.add(ativo.id);
+        return true;
+    });
+
+    const totalValor = itensResumo.reduce((acc, curr) => acc + Number(curr.preco || 0), 0);
+    const totalItens = itensResumo.length;
+    const locaisUnicos = [...new Set(itensResumo.map((item) => item.local).filter(Boolean))];
+
+    let maiorItem = itensResumo[0] || { preco: 0, item: '-' };
+    itensResumo.forEach((i) => {
+        if (Number(i.preco || 0) > Number(maiorItem.preco || 0)) maiorItem = i;
+    });
+
+    if (getEl('kpi-valor-total')) getEl('kpi-valor-total').textContent = formatMoney(totalValor);
+    if (getEl('kpi-total-itens')) getEl('kpi-total-itens').textContent = totalItens;
+    if (getEl('kpi-locais')) getEl('kpi-locais').textContent = locaisUnicos.length;
+
+    if (getEl('kpi-maior-valor')) {
+        getEl('kpi-maior-valor').textContent = totalItens ? formatMoney(maiorItem.preco) : '-';
+        getEl('kpi-maior-valor').title = totalItens ? maiorItem.item : '-';
+    }
+
+    const resumoClassificacao = {};
+    const resumoLocal = {};
+
+    itensResumo.forEach((ativo) => {
+        const classificacao = ativo.classificacao || 'Outros';
+        const local = ativo.local || 'Sem local definido';
+
+        resumoClassificacao[classificacao] = (resumoClassificacao[classificacao] || 0) + Number(ativo.preco || 0);
+        resumoLocal[local] = (resumoLocal[local] || 0) + 1;
+    });
+
+    renderCharts(resumoClassificacao, resumoLocal);
+}
+
+function renderCharts(dadosClassificacao, dadosLocal) {
+    if (!getEl('chartClassificacao') || !getEl('chartLocal') || !window.Chart) return;
+
+    if (chartClassificacaoInstance) chartClassificacaoInstance.destroy();
+    if (chartLocalInstance) chartLocalInstance.destroy();
+
+    Chart.defaults.font.family = 'Inter';
+    Chart.defaults.color = '#64748b';
+
+    const ctxPie = getEl('chartClassificacao').getContext('2d');
+    const labelsClassificacao = Object.keys(dadosClassificacao);
+    const valuesClassificacao = Object.values(dadosClassificacao);
+
+    chartClassificacaoInstance = new Chart(ctxPie, {
+        type: 'doughnut',
+        data: {
+            labels: labelsClassificacao.length ? labelsClassificacao : ['Sem dados'],
+            datasets: [{
+                data: valuesClassificacao.length ? valuesClassificacao : [1],
+                backgroundColor: labelsClassificacao.length
+                    ? ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#64748b', '#14b8a6', '#f97316']
+                    : ['#e2e8f0'],
+                borderWidth: 0,
+                hoverOffset: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: { usePointStyle: true, boxWidth: 8, font: { weight: '500' } }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: (ctx) => labelsClassificacao.length ? ` ${formatMoney(ctx.raw)}` : ' Sem dados'
+                    }
+                }
+            },
+            cutout: '75%'
+        }
+    });
+
+    const topLocais = Object.entries(dadosLocal).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const ctxBar = getEl('chartLocal').getContext('2d');
+
+    chartLocalInstance = new Chart(ctxBar, {
+        type: 'bar',
+        data: {
+            labels: topLocais.length ? topLocais.map((i) => i[0].split('/')[0]) : ['Sem dados'],
+            datasets: [{
+                label: 'Qtd de Itens',
+                data: topLocais.length ? topLocais.map((i) => i[1]) : [0],
+                backgroundColor: '#3b82f6',
+                borderRadius: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true, ticks: { stepSize: 1 }, grid: { color: '#f1f5f9' } },
+                x: { grid: { display: false } }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+// ================= LISTAGEM =================
+
+function renderAtivosList(filtro = '') {
+    const container = getEl('ativosContainer');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (isLoadingAtivos) {
+        container.innerHTML = `
+            <div class="text-center py-10 text-slate-500">
+                <i class="fa-solid fa-spinner fa-spin text-4xl mb-3 text-slate-300 block"></i>
+                Carregando ativos do Supabase...
+            </div>
+        `;
+        return;
+    }
+
+    const termo = String(filtro || '').toLowerCase().trim();
+    const dadosFiltrados = ativosData.filter((item) =>
+        item.item.toLowerCase().includes(termo) ||
+        item.numero.includes(termo) ||
+        item.local.toLowerCase().includes(termo) ||
+        item.classificacao.toLowerCase().includes(termo)
+    );
+
+    if (dadosFiltrados.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-10 text-slate-500">
+                <i class="fa-solid fa-folder-open text-4xl mb-3 text-slate-300 block"></i>
+                Nenhum ativo encontrado.
+            </div>
+        `;
+        return;
+    }
+
+    const agrupado = dadosFiltrados.reduce((acc, ativo) => {
+        const local = ativo.local || 'Sem local definido';
+        if (!acc[local]) acc[local] = [];
+        acc[local].push(ativo);
+        return acc;
+    }, {});
+
+    Object.keys(agrupado).sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach((local, index) => {
+        const itens = agrupado[local].sort((a, b) => a.numero.localeCompare(b.numero, 'pt-BR', { numeric: true }));
+        const valorArea = itens.reduce((acc, curr) => acc + Number(curr.preco || 0), 0);
+
+        const cardsHTML = itens.map((ativo) => {
+            const safeItem = escapeHTML(ativo.item);
+            const safeClassificacao = escapeHTML(ativo.classificacao);
+            const safeNumero = escapeHTML(ativo.numero);
+            const imageHTML = ativo.img_url
+                ? `<img src="${escapeHTML(ativo.img_url)}" alt="${safeItem}" class="w-full h-full object-cover">`
+                : `<i class="fa-solid fa-image text-lg"></i>`;
+
+            return `
+                <div onclick="openModal(${Number(ativo.id)})" class="bg-white p-3 rounded-lg border border-slate-200 shadow-sm cursor-pointer hover:border-secondary/50 hover:shadow-md transition-all group flex items-start">
+                    <div class="w-14 h-14 rounded-md bg-slate-100 flex-shrink-0 flex items-center justify-center text-slate-400 mr-3 overflow-hidden border border-slate-200">
+                        ${imageHTML}
+                    </div>
+                    <div class="flex-1 min-w-0 py-0.5">
+                        <div class="flex justify-between items-start mb-1">
+                            <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider bg-slate-100 px-1.5 py-0.5 rounded">Nº ${safeNumero}</p>
+                            <span class="text-[10px] font-semibold text-secondary bg-blue-50 px-1.5 py-0.5 rounded truncate max-w-[80px]">${safeClassificacao}</span>
+                        </div>
+                        <p class="text-sm font-bold text-slate-800 truncate group-hover:text-secondary transition-colors" title="${safeItem}">${safeItem}</p>
+                        <p class="text-xs font-semibold text-emerald-600 mt-1">${formatMoney(ativo.preco)}</p>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        const accordionHTML = `
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <button type="button" onclick="toggleAccordion('acc-${index}')" class="w-full px-5 py-4 flex justify-between items-center bg-white hover:bg-slate-50 transition-colors focus:outline-none">
+                    <div class="flex items-center text-left min-w-0">
+                        <div class="bg-blue-50 text-secondary border border-blue-100 w-10 h-10 rounded-lg flex items-center justify-center mr-4 flex-shrink-0">
+                            <i class="fa-solid fa-map-pin"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <h4 class="font-bold text-slate-800 text-sm md:text-base truncate">${escapeHTML(local)}</h4>
+                            <p class="text-xs text-slate-500 font-medium mt-0.5">${itens.length} ite${itens.length > 1 ? 'ns' : 'm'} • <span class="text-emerald-600">${formatMoney(valorArea)}</span></p>
+                        </div>
+                    </div>
+                    <i id="icon-acc-${index}" class="fa-solid fa-chevron-down text-slate-400 transition-transform duration-300 ml-4"></i>
+                </button>
+
+                <div id="acc-${index}" class="accordion-content bg-slate-50/50 border-t border-slate-100">
+                    <div class="p-3 md:p-5">
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            ${cardsHTML}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        container.insertAdjacentHTML('beforeend', accordionHTML);
+    });
+}
+
+// Agrupamento exclusivamente visual; nenhum campo local é alterado.
+const VISUAL_GROUP_TOKENS = new Set(['adm','administrativo','almoxarifado','area','automacao','cafeteria','cofre','comercial','compras','consultoria','copa','cozinha','defeito','descanso','diretoria','entrada','externo','financeiro','fundicao','galpao','ia','lavanderia','manutencao','oficina','para','bens','producao','projetos','quebrado','recepcao','sala','setor','suporte','tecnica']);
+const normalizeLocationText = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase('pt-BR').replace(/\s+/g,' ').trim();
+function getVisualGroups(ativos) {
+    const tokens = new Map();
+    [...new Set(ativos.map(a => a.local || 'Sem local definido'))].forEach(local => {
+        [...new Set(String(local).trim().split(/[\/\s]+/).map(normalizeLocationText).filter(Boolean))].forEach(token => {
+            if (VISUAL_GROUP_TOKENS.has(token)) return;
+            if (!tokens.has(token)) tokens.set(token, new Set());
+            tokens.get(token).add(local);
+        });
+    });
+    const candidates=[...tokens].filter(([,locais])=>locais.size>1).map(([key,locais])=>({key,label:key[0].toLocaleUpperCase('pt-BR')+key.slice(1),locais:[...locais]}));
+    const byLocal=new Map(); candidates.forEach(g=>g.locais.forEach(l=>byLocal.set(l,[...(byLocal.get(l)||[]),g])));
+    const result=new Map(); candidates.forEach(g=>{const locais=g.locais.filter(l=>byLocal.get(l).length===1);if(locais.length>1)locais.forEach(l=>result.set(l,g));});
+    return result;
+}
+const renderAtivosListOriginal=renderAtivosList;
+renderAtivosList=function(filtro='') {
+    const container=getEl('ativosContainer'); if(!container||isLoadingAtivos){renderAtivosListOriginal(filtro);return;}
+    const term=normalizeLocationText(filtro), groups=getVisualGroups(ativosData);
+    const requested=new Set([...groups.values()].filter(g=>g.label.toLocaleLowerCase('pt-BR').includes(term)).map(g=>g.key));
+    const groupSearch=term&&requested.size;
+    renderAtivosListOriginal(groupSearch?'':filtro);
+    if(!container.children.length)return;
+    const visible=ativosData.filter(a=>groupSearch ? requested.has(groups.get(a.local)?.key) : normalizeLocationText(a.item).includes(term)||a.numero.includes(term)||normalizeLocationText(a.local).includes(term)||normalizeLocationText(a.classificacao).includes(term));
+    const locals=new Set(visible.map(a=>a.local||'Sem local definido')), cards=[...container.children].filter(c=>locals.has(c.querySelector('h4')?.textContent||''));
+    container.innerHTML=''; const entries=new Map();
+    cards.forEach(card=>{const local=card.querySelector('h4').textContent,g=groups.get(local),key=g?`g:${g.key}`:`l:${local}`;if(!entries.has(key))entries.set(key,g?{g,cards:[]}:{label:local,cards:[]});entries.get(key).cards.push({local,card});});
+    [...entries.values()].sort((a,b)=>(a.g?.label||a.label).localeCompare(b.g?.label||b.label,'pt-BR')).forEach((entry,i)=>{
+        entry.cards.sort((a,b)=>a.local.localeCompare(b.local,'pt-BR'));if(!entry.g){container.appendChild(entry.cards[0].card);return;}
+        const id=`visual-group-${i}`, assets=visible.filter(a=>groups.get(a.local)?.key===entry.g.key), value=assets.reduce((sum,a)=>sum+Number(a.preco||0),0), wrap=document.createElement('div');
+        wrap.className='bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden';wrap.innerHTML=`<button type="button" class="w-full px-5 py-4 flex justify-between items-center bg-white hover:bg-slate-50 transition-colors focus:outline-none"><div class="flex items-center text-left min-w-0"><div class="bg-blue-50 text-secondary border border-blue-100 w-10 h-10 rounded-lg flex items-center justify-center mr-4 flex-shrink-0"><i class="fa-solid fa-users"></i></div><div class="min-w-0"><h4 class="font-bold text-slate-800 text-sm md:text-base truncate"></h4><p class="text-xs text-slate-500 font-medium mt-0.5"></p></div></div><i id="icon-${id}" class="fa-solid fa-chevron-down text-slate-400 transition-transform duration-300 ml-4"></i></button><div id="${id}" class="accordion-content bg-slate-50/50 border-t border-slate-100"><div class="p-3 md:p-5 space-y-3"></div></div>`;
+        wrap.querySelector('button').onclick=()=>toggleAccordion(id);wrap.querySelector('h4').textContent=entry.g.label;wrap.querySelector('p').innerHTML=`${assets.length} ite${assets.length>1?'ns':'m'} • <span class="text-emerald-600">${formatMoney(value)}</span>`;entry.cards.forEach(x=>wrap.querySelector(`#${id}>div`).appendChild(x.card));container.appendChild(wrap);
+    });
+};
+function toggleAccordion(id) {
+    const content = getEl(id);
+    const icon = getEl(`icon-${id}`);
+
+    if (!content || !icon) return;
+
+    if (content.classList.contains('open')) {
+        content.classList.remove('open');
+        icon.style.transform = 'rotate(0deg)';
+    } else {
+        content.classList.add('open');
+        icon.style.transform = 'rotate(180deg)';
+    }
+}
+
+// ================= MODAL DETALHES =================
+
+function openModal(id) {
+    const ativo = todosAtivosData.find((a) => Number(a.id) === Number(id));
+    if (!ativo) return;
+
+    activeModalAtivoId = Number(ativo.id);
+
+    getEl('modal-numero').textContent = ativo.numero;
+    getEl('modal-item').textContent = ativo.item;
+    getEl('modal-classificacao').textContent = ativo.classificacao;
+    getEl('modal-local').textContent = ativo.local;
+    getEl('modal-preco').textContent = formatMoney(ativo.preco);
+    getEl('modal-data').textContent = formatDate(ativo.data);
+    getEl('modal-nf').textContent = ativo.nf;
+    getEl('modal-pagamento').textContent = ativo.pagamento;
+
+    const iconPgto = getEl('modal-icon-pagamento');
+    const pagamentoLower = ativo.pagamento.toLowerCase();
+
+    if (pagamentoLower.includes('pix')) {
+        iconPgto.className = 'fa-brands fa-pix text-emerald-500 text-2xl opacity-20';
+    } else if (pagamentoLower.includes('boleto')) {
+        iconPgto.className = 'fa-solid fa-barcode text-slate-500 text-2xl opacity-20';
+    } else if (pagamentoLower.includes('cart')) {
+        iconPgto.className = 'fa-solid fa-credit-card text-blue-500 text-2xl opacity-20';
+    } else {
+        iconPgto.className = 'fa-solid fa-money-bill-wave text-green-500 text-2xl opacity-20';
+    }
+
+    const imgEl = getEl('modal-imagem');
+    imgEl.src = ativo.img_url || 'https://placehold.co/400x400/f8fafc/64748b?text=Sem+Foto';
+    imgEl.alt = ativo.item || 'Foto do Item';
+
+    const btnNf = getEl('modal-btn-nf');
+
+    if (ativo.nf !== 'S/NF' && ativo.pdf_url) {
+        btnNf.classList.remove('opacity-50', 'cursor-not-allowed');
+        btnNf.innerHTML = '<i class="fa-solid fa-file-pdf text-accent mr-2"></i> Visualizar Nota Fiscal';
+        btnNf.onclick = () => abrirNotaFiscal(ativo);
+    } else {
+        btnNf.classList.add('opacity-50', 'cursor-not-allowed');
+        btnNf.innerHTML = '<i class="fa-solid fa-file-pdf mr-2"></i> NF Não Anexada';
+        btnNf.onclick = null;
+    }
+
+    const btnEditar = getEl('modal-btn-editar');
+    const btnBaixa = getEl('modal-btn-baixa');
+
+    btnEditar.onclick = () => startEditAtivo(ativo.id);
+    btnBaixa.onclick = () => openBaixaModal(ativo.id);
+
+    if (ativo.ativo && !READ_ONLY_MODE) {
+        btnEditar.classList.remove('hidden');
+        btnBaixa.classList.remove('hidden');
+    } else {
+        btnEditar.classList.add('hidden');
+        btnBaixa.classList.add('hidden');
+    }
+
+    getEl('itemModal').classList.remove('hidden');
+}
+
+function closeModal() {
+    activeModalAtivoId = null;
+    getEl('itemModal')?.classList.add('hidden');
+}
+
+// ================= HISTÓRICO =================
+
+function renderHistorico() {
+    const container = getEl('historicoContainer');
+    if (!container) return;
+
+    if (isLoadingHistorico) {
+        container.innerHTML = `
+            <div class="text-center py-10 text-slate-500">
+                <i class="fa-solid fa-spinner fa-spin text-4xl mb-3 text-slate-300 block"></i>
+                Carregando histórico...
+            </div>
+        `;
+        return;
+    }
+
+    const termo = String(getEl('historicoSearchInput')?.value || '').toLowerCase().trim();
+
+    const registros = historicoData.filter((registro) => {
+        const base = [
+            registro.numero,
+            registro.item,
+            registro.acao,
+            registro.descricao,
+            registro.usuario_email
+        ].join(' ').toLowerCase();
+
+        return base.includes(termo);
+    });
+
+    if (!registros.length) {
+        container.innerHTML = `
+            <div class="text-center py-10 text-slate-500 bg-white rounded-xl border border-slate-200">
+                <i class="fa-solid fa-clock-rotate-left text-4xl mb-3 text-slate-300 block"></i>
+                Nenhum registro de histórico encontrado.
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = registros.map((registro) => {
+        const acao = String(registro.acao || '').toLowerCase();
+        let iconClass = 'fa-solid fa-circle-info text-blue-500';
+        let badgeClass = 'bg-blue-50 text-blue-700 border-blue-100';
+
+        if (acao.includes('cadastro')) {
+            iconClass = 'fa-solid fa-plus text-emerald-500';
+            badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-100';
+        } else if (acao.includes('edicao')) {
+            iconClass = 'fa-solid fa-pen text-amber-500';
+            badgeClass = 'bg-amber-50 text-amber-700 border-amber-100';
+        } else if (acao.includes('baixa')) {
+            iconClass = 'fa-solid fa-box-archive text-rose-500';
+            badgeClass = 'bg-rose-50 text-rose-700 border-rose-100';
+        }
+
+        return `
+            <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-sm flex gap-4">
+                <div class="w-10 h-10 rounded-full bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0">
+                    <i class="${iconClass}"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="text-xs font-bold px-2 py-0.5 rounded-md border ${badgeClass}">${escapeHTML(registro.acao || 'ação')}</span>
+                            <span class="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded">Nº ${escapeHTML(registro.numero || '-')}</span>
+                        </div>
+                        <span class="text-xs text-slate-400 font-medium">${escapeHTML(formatDateTime(registro.created_at))}</span>
+                    </div>
+
+                    <h4 class="font-bold text-slate-800 mt-2 truncate">${escapeHTML(registro.item || 'Ativo não informado')}</h4>
+                    <p class="text-sm text-slate-600 mt-1">${escapeHTML(truncateText(registro.descricao || '-', 240))}</p>
+
+                    <div class="mt-2 text-xs text-slate-400">
+                        <i class="fa-solid fa-user mr-1"></i> ${escapeHTML(registro.usuario_email || 'Usuário não informado')}
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderHistoricoError(message) {
+    const container = getEl('historicoContainer');
+    if (!container) return;
+
+    container.innerHTML = `
+        <div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-5">
+            <div class="flex gap-3">
+                <i class="fa-solid fa-triangle-exclamation text-xl mt-0.5"></i>
+                <div>
+                    <h3 class="font-bold">Histórico ainda não disponível</h3>
+                    <p class="text-sm mt-1">A tela foi criada, mas a tabela <strong>${TABLE_HISTORICO}</strong> precisa existir no schema <strong>${SUPABASE_SCHEMA}</strong>.</p>
+                    <p class="text-xs mt-2 opacity-80">Detalhe técnico: ${escapeHTML(message)}</p>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// ================= RELATÓRIOS =================
+
+function popularFiltrosRelatorios() {
+    const classificacaoSelect = getEl('relatorioClassificacao');
+    const localSelect = getEl('relatorioLocal');
+
+    if (!classificacaoSelect || !localSelect) return;
+
+    const classificacaoAtual = classificacaoSelect.value;
+    const localAtual = localSelect.value;
+
+    const classificacoes = [...new Set(todosAtivosData.map((ativo) => ativo.classificacao).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+    const locais = [...new Set(todosAtivosData.map((ativo) => ativo.local).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+    classificacaoSelect.innerHTML = '<option value="">Todas</option>' + classificacoes
+        .map((item) => `<option value="${escapeHTML(item)}">${escapeHTML(item)}</option>`)
+        .join('');
+
+    localSelect.innerHTML = '<option value="">Todos</option>' + locais
+        .map((item) => `<option value="${escapeHTML(item)}">${escapeHTML(item)}</option>`)
+        .join('');
+
+    classificacaoSelect.value = classificacaoAtual;
+    localSelect.value = localAtual;
+}
+
+function getRelatorioFiltrado() {
+    const busca = String(getEl('relatorioBusca')?.value || '').toLowerCase().trim();
+    const classificacao = getEl('relatorioClassificacao')?.value || '';
+    const local = getEl('relatorioLocal')?.value || '';
+    const status = getEl('relatorioStatus')?.value || 'ativos';
+
+    return todosAtivosData.filter((ativo) => {
+        const statusOk =
+            status === 'todos' ||
+            (status === 'ativos' && ativo.ativo) ||
+            (status === 'inativos' && !ativo.ativo);
+
+        const classificacaoOk = !classificacao || ativo.classificacao === classificacao;
+        const localOk = !local || ativo.local === local;
+
+        const texto = [
+            ativo.numero,
+            ativo.item,
+            ativo.classificacao,
+            ativo.local,
+            ativo.nf,
+            ativo.pagamento
+        ].join(' ').toLowerCase();
+
+        return statusOk && classificacaoOk && localOk && texto.includes(busca);
+    });
+}
+
+function renderRelatorios() {
+    const tabela = getEl('relatorioTabela');
+    if (!tabela) return;
+
+    const dados = getRelatorioFiltrado();
+    const valorTotal = dados.reduce((acc, ativo) => acc + Number(ativo.preco || 0), 0);
+    const locais = [...new Set(dados.map((ativo) => ativo.local).filter(Boolean))];
+
+    getEl('relatorioTotalItens').textContent = dados.length;
+    getEl('relatorioValorTotal').textContent = formatMoney(valorTotal);
+    getEl('relatorioLocais').textContent = locais.length;
+
+    if (!dados.length) {
+        tabela.innerHTML = `
+            <tr>
+                <td colspan="6" class="px-4 py-8 text-center text-slate-500">
+                    Nenhum ativo encontrado com os filtros atuais.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    tabela.innerHTML = dados.map((ativo) => `
+        <tr class="hover:bg-slate-50">
+            <td class="px-4 py-3 font-mono text-slate-600">${escapeHTML(ativo.numero)}</td>
+            <td class="px-4 py-3 font-semibold text-slate-800">${escapeHTML(ativo.item)}</td>
+            <td class="px-4 py-3 text-slate-600">${escapeHTML(ativo.classificacao)}</td>
+            <td class="px-4 py-3 text-slate-600">${escapeHTML(ativo.local)}</td>
+            <td class="px-4 py-3 font-semibold text-emerald-600">${formatMoney(ativo.preco)}</td>
+            <td class="px-4 py-3">
+                <span class="text-xs font-bold px-2 py-1 rounded-md ${ativo.ativo ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}">
+                    ${ativo.ativo ? 'Ativo' : 'Baixado'}
+                </span>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function exportarCSV() {
+    const dados = getRelatorioFiltrado();
+
+    if (!dados.length) {
+        showToast('Não há dados para exportar.', 'warning');
+        return;
+    }
+
+    const headers = [
+        'Plaqueta',
+        'Item',
+        'Classificacao',
+        'Local',
+        'Data da Compra',
+        'NF',
+        'Pagamento',
+        'Valor',
+        'Status'
+    ];
+
+    const rows = dados.map((ativo) => [
+        ativo.numero,
+        ativo.item,
+        ativo.classificacao,
+        ativo.local,
+        formatDate(ativo.data),
+        ativo.nf,
+        ativo.pagamento,
+        Number(ativo.preco || 0).toFixed(2).replace('.', ','),
+        ativo.ativo ? 'Ativo' : 'Baixado'
+    ]);
+
+    const csv = [headers, ...rows]
+        .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(';'))
+        .join('\n');
+
+    const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    const today = new Date().toISOString().slice(0, 10);
+    link.href = url;
+    link.download = `relatorio-patrimonios-${today}.csv`;
+    link.click();
+
+    URL.revokeObjectURL(url);
+    showToast('Relatório CSV exportado.');
+}
+
+function imprimirRelatorio() {
+    const dados = getRelatorioFiltrado();
+
+    if (!dados.length) {
+        showToast('Não há dados para imprimir.', 'warning');
+        return;
+    }
+
+    const valorTotal = dados.reduce((acc, ativo) => acc + Number(ativo.preco || 0), 0);
+    const hoje = new Date().toLocaleString('pt-BR');
+
+    const rows = dados.map((ativo) => `
+        <tr>
+            <td>${escapeHTML(ativo.numero)}</td>
+            <td>${escapeHTML(ativo.item)}</td>
+            <td>${escapeHTML(ativo.classificacao)}</td>
+            <td>${escapeHTML(ativo.local)}</td>
+            <td>${escapeHTML(formatDate(ativo.data))}</td>
+            <td>${escapeHTML(ativo.nf)}</td>
+            <td>${escapeHTML(formatMoney(ativo.preco))}</td>
+            <td>${ativo.ativo ? 'Ativo' : 'Baixado'}</td>
+        </tr>
+    `).join('');
+
+    const reportWindow = window.open('', '_blank', 'noopener,noreferrer');
+
+    if (!reportWindow) {
+        showToast('O navegador bloqueou a janela de impressão.', 'warning');
+        return;
+    }
+
+    reportWindow.document.write(`
+        <!DOCTYPE html>
+        <html lang="pt-BR">
+        <head>
+            <meta charset="UTF-8">
+            <title>Relatório Patrimonial MHS</title>
+            <style>
+                body { font-family: Arial, sans-serif; color: #0f172a; padding: 24px; }
+                h1 { margin: 0 0 4px; font-size: 22px; }
+                p { margin: 0; color: #475569; font-size: 12px; }
+                .summary { margin: 18px 0; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+                table { width: 100%; border-collapse: collapse; font-size: 11px; }
+                th, td { border: 1px solid #cbd5e1; padding: 7px; text-align: left; }
+                th { background: #f1f5f9; color: #334155; text-transform: uppercase; font-size: 10px; }
+            </style>
+        </head>
+        <body>
+            <h1>Relatório Patrimonial MHS</h1>
+            <p>Gerado em ${escapeHTML(hoje)} por ${escapeHTML(currentUser?.email || '-')}</p>
+
+            <div class="summary">
+                <strong>Total de itens:</strong> ${dados.length}<br>
+                <strong>Valor total:</strong> ${escapeHTML(formatMoney(valorTotal))}
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Plaqueta</th>
+                        <th>Item</th>
+                        <th>Classificação</th>
+                        <th>Local</th>
+                        <th>Data</th>
+                        <th>NF</th>
+                        <th>Valor</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+
+            <script>
+                window.onload = () => {
+                    window.print();
+                };
+            </script>
+        </body>
+        </html>
+    `);
+
+    reportWindow.document.close();
+}
+
+// ================= EVENTOS / BOOT =================
+
+function bindUIEvents() {
+    getEl('formLogin')?.addEventListener('submit', loginUsuario);
+    getEl('btnSignup')?.addEventListener('click', criarUsuario);
+    getEl('logoutBtn')?.addEventListener('click', logoutUsuario);
+    getEl('mobileLogoutBtn')?.addEventListener('click', logoutUsuario);
+
+    getEl('togglePasswordBtn')?.addEventListener('click', () => {
+        const input = getEl('login_password');
+        const icon = getEl('togglePasswordBtn').querySelector('i');
+
+        if (input.type === 'password') {
+            input.type = 'text';
+            icon.className = 'fa-solid fa-eye-slash';
+        } else {
+            input.type = 'password';
+            icon.className = 'fa-solid fa-eye';
+        }
+    });
+
+    const mobileMenuBtn = getEl('mobileMenuBtn');
+    const mobileNav = getEl('mobileNav');
+
+    mobileMenuBtn?.addEventListener('click', () => {
+        mobileNav.classList.toggle('hidden');
+    });
+
+    getEl('searchInput')?.addEventListener('input', (e) => {
+        renderAtivosList(e.target.value);
+    });
+
+    getEl('historicoSearchInput')?.addEventListener('input', renderHistorico);
+    getEl('btnRecarregarHistorico')?.addEventListener('click', () => carregarHistorico());
+
+    getEl('formCadastro')?.addEventListener('submit', cadastrarOuEditarAtivo);
+    getEl('btnCancelarEdicao')?.addEventListener('click', resetCadastroForm);
+    getEl('btnLimparForm')?.addEventListener('click', resetCadastroForm);
+
+    getEl('formBaixa')?.addEventListener('submit', confirmarBaixa);
+
+    getEl('cad_imagem')?.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        getEl('cad_imagem_label').textContent = file ? file.name : 'PNG, JPG até 5MB';
+    });
+
+    getEl('cad_pdf')?.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        getEl('cad_pdf_label').textContent = file ? file.name : 'Apenas PDF até 5MB';
+    });
+
+    ['relatorioBusca', 'relatorioClassificacao', 'relatorioLocal', 'relatorioStatus'].forEach((id) => {
+        getEl(id)?.addEventListener('input', renderRelatorios);
+        getEl(id)?.addEventListener('change', renderRelatorios);
+    });
+
+    getEl('btnExportarCSV')?.addEventListener('click', exportarCSV);
+    getEl('btnImprimirRelatorio')?.addEventListener('click', imprimirRelatorio);
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeBaixaModal();
+            closeModal();
+        }
+    });
+}
+
+async function initApp() {
+    const authView = getEl('authView');
+    const appShell = getEl('appShell');
+
+    authView?.classList.add('hidden');
+    authView?.classList.remove('flex');
+
+    appShell?.classList.remove('hidden');
+    appShell?.classList.add('flex');
+    appShell?.classList.add('flex-col');
+
+    try {
+        initSupabaseClient();
+        bindUIEvents();
+
+        await handleAuthState(null);
+    } catch (error) {
+        console.error('Erro ao inicializar aplicação:', error);
+        setConnectionStatus('error', 'Erro ao conectar');
+        showToast(`Erro ao iniciar: ${parseSupabaseError(error)}`, 'error');
+        initDashboard();
+        renderAtivosList();
+        renderRelatorios();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', initApp);
+
+// Funções expostas para handlers inline do HTML gerado dinamicamente.
+window.navigate = navigate;
+window.toggleAccordion = toggleAccordion;
+window.openModal = openModal;
+window.closeModal = closeModal;
+window.openBaixaModal = openBaixaModal;
+window.closeBaixaModal = closeBaixaModal;
