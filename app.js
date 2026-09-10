@@ -500,8 +500,7 @@ function initSupabaseClient() {
         global: {
             headers: {
                 'x-client-info': 'mhs-gestao-patrimonial-web'
-            },
-            fetch: adminGatewayFetch,
+            }
         }
     });
 }
@@ -548,7 +547,9 @@ async function handleAuthState(session = null) {
 
     if (isSameUser) return;
 
-    setConnectionStatus('connected', 'Conectado ao Supabase');
+    // A sessão está pronta; o estado "Conectado" só será exibido após a
+    // consulta de patrimônios retornar uma lista válida.
+    setConnectionStatus('loading', 'Carregando dados autorizados...');
     await carregarAtivos();
     await carregarHistorico({ silent: true });
     navigate(currentView || 'dashboard');
@@ -753,24 +754,33 @@ async function carregarAtivos({ silent = false } = {}) {
 
         if (error) throw error;
 
-        // O gateway pode devolver um objeto de erro quando o PostgREST rejeita
-        // a consulta. Não tente tratá-lo como lista (isso causava "map is not
-        // a function" e escondia a causa original).
+        // A consulta REST deve devolver uma lista. Não converta objetos
+        // inesperados em registros, pois isso ocultaria uma falha de API e
+        // geraria KPIs zerados.
         if (!Array.isArray(data)) {
             const gatewayMessage = data && typeof data === 'object'
                 ? (data.message || data.error || data.details || data.hint)
                 : null;
             if (gatewayMessage) throw new Error(gatewayMessage);
-            // Alguns proxies/PostgREST podem devolver um único registro como
-            // objeto. Normalize-o para a lista esperada pelo dashboard.
-            if (data && typeof data === 'object') {
-                data = [data];
-            } else {
-                throw new Error('Resposta inválida do banco de dados.');
-            }
+            throw new Error('Resposta inválida do banco de dados.');
         }
 
-        let registrosComFotos = data;
+        // Um patrimônio sem identificador não pode ser contabilizado com
+        // segurança. Registros válidos continuam carregando normalmente.
+        const registrosValidos = data.filter((registro) => (
+            registro
+            && typeof registro === 'object'
+            && registro.id !== null
+            && registro.id !== undefined
+        ));
+        if (registrosValidos.length !== data.length) {
+            console.warn('Registros inválidos foram ignorados na leitura de patrimônios.', {
+                recebidos: data.length,
+                válidos: registrosValidos.length,
+            });
+        }
+
+        let registrosComFotos = registrosValidos;
         try {
             registrosComFotos = await resolveStoragePhotos(registrosComFotos);
         } catch (photoError) {
