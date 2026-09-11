@@ -1228,7 +1228,8 @@ textarea {
     }
 
     .summary-kpi-grid .summary-kpi-card {
-        aspect-ratio: 1 / 1;
+        aspect-ratio: auto;
+        height: 7.25rem;
         min-height: 0;
         padding: 0.65rem;
         display: flex;
