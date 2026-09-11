@@ -537,11 +537,11 @@ canvas {
 
 /* Valor por classificação: apresentação restrita ao componente. */
 .classification-card-heading {
-    display: none;
+    display: block;
 }
 
 .classification-display-toggle {
-    display: inline-flex;
+    display: none;
     flex: 0 0 auto;
     padding: 0.18rem;
     gap: 0.1rem;
