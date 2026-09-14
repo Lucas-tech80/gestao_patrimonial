@@ -948,6 +948,26 @@ textarea {
 }
 
 @media (max-width: 767px) {
+    /* Mantém o shell preso à viewport e impede que larguras herdadas
+       desloquem o conteúdo horizontalmente no mobile. */
+    #appScreen,
+    #appShell,
+    #appShell > header,
+    #appShell > main {
+        width: 100%;
+        min-width: 0;
+        max-width: 100%;
+        margin-left: 0;
+        margin-right: 0;
+    }
+
+    #appShell > header > div,
+    #appShell > header > div > div,
+    #appShell > main,
+    .view-section {
+        min-width: 0;
+    }
+
     #appShell > header > div > div {
         height: auto;
         min-height: 4rem;
@@ -957,6 +977,17 @@ textarea {
 
     #appShell > header img {
         max-height: 2.5rem;
+    }
+
+    /* Os botões mantêm a área de toque; somente o desenho dos ícones é
+       reduzido para equilibrar o cabeçalho na tela estreita. */
+    #appShell > header #adminConfigBtn i,
+    #appShell > header #logoutBtn i {
+        font-size: 0.9375rem;
+    }
+
+    #appShell > header #mobileMenuBtn i {
+        font-size: 1.125rem;
     }
 
     #appShell > main {
@@ -1174,6 +1205,11 @@ textarea {
     .report-mobile-status.is-inactive {
         color: #be123c;
         background: #fff1f2;
+    }
+
+    .report-mobile-status.is-defective {
+        color: #c2410c;
+        background: #fff7ed;
     }
 
     .report-mobile-item {

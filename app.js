@@ -304,7 +304,10 @@ const normalizeAtivo = (ativo) => ({
     // O banco ainda contÃ©m caminhos locais antigos (C:\\Users\\...).
     // Eles nÃ£o sÃ£o URLs carregÃ¡veis pela interface e devem permanecer como placeholder.
     img_url: /^https?:\/\//i.test(String(ativo.foto || '').trim()) ? String(ativo.foto).trim() : null,
-    pdf_url: ativo.documento || null,
+    // Caminhos locais antigos não são anexos acessíveis pela aplicação.
+    pdf_url: isLegacyLocalPath(String(ativo.documento || '').trim())
+        ? null
+        : (ativo.documento || null),
     status: ativo.status ?? null,
     ativo: ['ativo', 'ativos'].includes(normalizeStatus(ativo.status))
 });
@@ -361,6 +364,7 @@ const setButtonLoading = (button, loading, loadingText = 'Carregando...') => {
 
 const updateLocalData = (ativoAtualizado) => {
     const normalized = normalizeAtivo(ativoAtualizado);
+    if (typeof isCadeiraEmDefeito === 'function' && isCadeiraEmDefeito(normalized)) return;
     const index = todosAtivosData.findIndex((item) => Number(item.id) === Number(normalized.id));
 
     if (index >= 0) {
@@ -788,7 +792,9 @@ async function carregarAtivos({ silent = false } = {}) {
             // dashboard nem impedir a leitura dos patrimônios.
             console.warn('Não foi possível resolver as fotos; dados carregados sem imagens:', photoError);
         }
-        todosAtivosData = registrosComFotos.map(normalizeAtivo);
+        todosAtivosData = registrosComFotos
+            .map(normalizeAtivo)
+            .filter((ativo) => !isCadeiraEmDefeito(ativo));
         ativosData = todosAtivosData.filter((ativo) => ativo.ativo);
 
         setConnectionStatus('connected');
@@ -888,21 +894,33 @@ async function abrirNotaFiscal(ativo) {
             return;
         }
 
-        if (/^https?:\/\//i.test(ativo.pdf_url)) {
-            window.open(ativo.pdf_url, '_blank', 'noopener,noreferrer');
+        const documento = String(ativo.pdf_url).trim();
+        if (/^https?:\/\//i.test(documento)) {
+            window.open(documento, '_blank', 'noopener,noreferrer');
+            return;
+        }
+
+        // Alguns registros antigos salvaram o nome do bucket junto com o
+        // caminho. O Storage espera somente o caminho relativo do objeto.
+        const caminho = documento
+            .replace(/\\/g, '/')
+            .replace(/^\/+/, '')
+            .replace(new RegExp(`^${BUCKET_NFS}/`, 'i'), '');
+        if (!caminho || /^[a-z]:\//i.test(caminho)) {
+            showToast('O arquivo da nota fiscal não possui um caminho válido.', 'warning');
             return;
         }
 
         const { data, error } = await supabaseClient.storage
             .from(BUCKET_NFS)
-            .createSignedUrl(ativo.pdf_url, 60 * 60);
+            .createSignedUrl(caminho, 60 * 60);
 
         if (error) throw error;
 
         window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
     } catch (error) {
         console.error('Erro ao abrir nota fiscal:', error);
-        showToast(`Erro ao abrir NF: ${parseSupabaseError(error)}`, 'error');
+        showToast('O arquivo da nota fiscal não foi encontrado no armazenamento.', 'warning');
     }
 }
 
@@ -1003,7 +1021,7 @@ async function criarAtivo(payload, imagemFile, pdfFile) {
         const insertPayload = {
             ...payload,
             img_url: imgUrl,
-            pdf_url: pdfUrl,
+            documento: pdfUrl,
             ativo: true
         };
 
@@ -1051,7 +1069,7 @@ async function atualizarAtivo(payload, imagemFile, pdfFile) {
     }
 
     if (pdfFile) {
-        updatePayload.pdf_url = await uploadStorageFile(BUCKET_NFS, pdfFile, payload.numero, 'pdf');
+        updatePayload.documento = await uploadStorageFile(BUCKET_NFS, pdfFile, payload.numero, 'pdf');
     }
 
     const { data, error } = await supabaseClient
@@ -1553,24 +1571,18 @@ function renderChartLocal(dadosLocal) {
     if (chartLocalInstance) chartLocalInstance.destroy();
 
     const isStatusView = chartLocalView === 'status';
-    const resumoLocalVisual = getVisualLocationSummary(dadosLocal);
-    const locaisExibidos = [
-        'Sala Diretoria',
-        'Sala Automação',
-        'Sala Administrativo/Financeiro',
-        'Sala Cozinha',
-        'Sala Copa',
-        'Almoxarifado'
-    ]
-        .map((localPrioritario) => resumoLocalVisual
-            .find(([local]) => local === localPrioritario))
-        .filter(Boolean);
+    const resumoLocalVisual = getPrincipalLocationSummary(dadosLocal);
+    const resumoStatus = todosAtivosData.reduce((totais, ativo) => {
+        const categoria = getStatusCategoria(ativo);
+        totais[categoria] = (totais[categoria] || 0) + 1;
+        return totais;
+    }, { ativo: 0, inativo: 0, defeito: 0, outro: 0 });
     const labels = isStatusView
         ? ['Ativos', 'Inativos', 'Defeitos', 'Outros']
-        : locaisExibidos.map((i) => i[0]);
+        : resumoLocalVisual.map((i) => i[0]);
     const values = isStatusView
-        ? [127, 2, 10, 13]
-        : locaisExibidos.map((i) => i[1]);
+        ? [resumoStatus.ativo, resumoStatus.inativo, resumoStatus.defeito, resumoStatus.outro]
+        : resumoLocalVisual.map((i) => i[1]);
     const title = getEl('chartLocalTitle');
     const localChartVisual = getEl('localChartVisual');
     const statusChartVisual = getEl('statusChartVisual');
@@ -1801,6 +1813,66 @@ const VISUAL_LOCATION_GROUPS = Object.freeze([
 ]);
 const VISUAL_GROUP_FILTER_PREFIX = '__visual_group__:';
 const normalizeLocationText = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').replace(/[\/\\.,;:_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+// O nome do local identifica itens com defeito, mesmo que o registro legado
+// ainda esteja marcado como inativo no banco.
+const isDefeitoLocation = (local) => /\bdefeito\b/.test(normalizeLocationText(local));
+const getStatusCategoria = (ativo) => {
+    if (isDefeitoLocation(ativo?.local)) return 'defeito';
+
+    const status = normalizeStatus(ativo?.status);
+    if (['ativo', 'ativos'].includes(status)) return 'ativo';
+    if (['defeito', 'defeitos'].includes(status)) return 'defeito';
+    if (['inativo', 'inativos', 'baixado', 'baixados'].includes(status)) return 'inativo';
+    return 'outro';
+};
+const getStatusExibicao = (ativo) => getStatusCategoria(ativo) === 'defeito'
+    ? 'Defeito'
+    : (ativo.ativo ? 'Ativo' : 'Baixado');
+const isCadeiraEmDefeito = (ativo) => {
+    const classificacao = normalizeLocationText(ativo?.classificacao);
+    const item = normalizeLocationText(ativo?.item);
+    const isCadeira = classificacao === 'cadeira' || item.includes('cadeira');
+    return isCadeira && getStatusCategoria(ativo) === 'defeito';
+};
+const PRINCIPAL_LOCATION_LABELS = Object.freeze([
+    'Sala Diretoria',
+    'Sala Automação',
+    'Sala Administrativo',
+    'Sala Cozinha',
+    'Sala Copa',
+    'Almoxarifado'
+]);
+const getPrincipalLocationCategory = (local) => {
+    if (isDefeitoLocation(local)) return null;
+
+    const normalized = normalizeLocationText(local);
+    if (normalized.includes('sala diretoria') || ['jefferson', 'barbara', 'breno', 'dariane'].some((name) => normalized.includes(name))) {
+        return 'Sala Diretoria';
+    }
+    if (normalized.includes('sala automacao') || ['francis', 'orlean'].some((name) => normalized.includes(name))) {
+        return 'Sala Automação';
+    }
+    if (normalized.includes('sala administrativo') || normalized.includes('administrativo financeiro') || normalized.includes('mickaele')) {
+        return 'Sala Administrativo';
+    }
+    if (normalized.includes('sala cozinha')) return 'Sala Cozinha';
+    if (normalized.includes('sala copa') || ['luan', 'sebastiao'].some((name) => normalized.includes(name))) {
+        return 'Sala Copa';
+    }
+    if (normalized.includes('almoxarifado')) return 'Almoxarifado';
+
+    return null;
+};
+const getPrincipalLocationSummary = (dadosLocal) => {
+    const totals = Object.fromEntries(PRINCIPAL_LOCATION_LABELS.map((label) => [label, 0]));
+
+    Object.entries(dadosLocal).forEach(([local, quantidade]) => {
+        const category = getPrincipalLocationCategory(local);
+        if (category) totals[category] += Number(quantidade || 0);
+    });
+
+    return PRINCIPAL_LOCATION_LABELS.map((label) => [label, totals[label]]);
+};
 const normalizeVisualLocalValue = (value) => String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -1863,7 +1935,7 @@ renderAtivosList = function (filtro = '') {
     ];
 
     const getStatusSection = (ativo) => {
-        const status = normalizeStatus(ativo.status);
+        const status = getStatusCategoria(ativo);
         if (status === 'ativo') return 'ativos';
         if (status === 'inativo') return 'inativos';
         if (status === 'defeito') return 'defeitos';
@@ -2074,7 +2146,7 @@ function openModal(id) {
 
     const btnNf = getEl('modal-btn-nf');
 
-    if (ativo.nf !== 'S/NF' && ativo.pdf_url) {
+    if (ativo.pdf_url) {
         btnNf.classList.remove('opacity-50', 'cursor-not-allowed');
         btnNf.innerHTML = '<i class="fa-solid fa-file-pdf text-accent mr-2"></i> Visualizar Nota Fiscal';
         btnNf.onclick = () => abrirNotaFiscal(ativo);
@@ -2249,10 +2321,12 @@ function getRelatorioFiltrado() {
     const status = getEl('relatorioStatus')?.value || 'ativos';
 
     return todosAtivosData.filter((ativo) => {
+        const categoriaStatus = getStatusCategoria(ativo);
         const statusOk =
             status === 'todos' ||
-            (status === 'ativos' && ativo.ativo) ||
-            (status === 'inativos' && !ativo.ativo);
+            (status === 'ativos' && categoriaStatus === 'ativo') ||
+            (status === 'defeito' && categoriaStatus === 'defeito') ||
+            (status === 'inativos' && categoriaStatus === 'inativo');
 
         const classificacaoOk = !classificacao || ativo.classificacao === classificacao;
         const groupKey = local.startsWith(VISUAL_GROUP_FILTER_PREFIX)
@@ -2299,6 +2373,8 @@ function renderRelatorios() {
     }
 
     tabela.innerHTML = dados.map((ativo) => {
+        const statusExibicao = getStatusExibicao(ativo);
+        const possuiDefeito = statusExibicao === 'Defeito';
         const safeNumero = escapeHTML(ativo.numero);
         const safeItem = escapeHTML(ativo.item);
         const safeClassificacao = escapeHTML(ativo.classificacao);
@@ -2316,8 +2392,8 @@ function renderRelatorios() {
             <td class="px-4 py-3 text-slate-600">${escapeHTML(ativo.local)}</td>
             <td class="px-4 py-3 font-semibold text-emerald-600">${formatMoney(ativo.preco)}</td>
             <td class="px-4 py-3">
-                <span class="text-xs font-bold px-2 py-1 rounded-md ${ativo.ativo ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}">
-                    ${ativo.ativo ? 'Ativo' : 'Baixado'}
+                <span class="text-xs font-bold px-2 py-1 rounded-md ${possuiDefeito ? 'bg-amber-50 text-amber-700' : (ativo.ativo ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700')}">
+                    ${statusExibicao}
                 </span>
             </td>
         </tr>
@@ -2330,7 +2406,7 @@ function renderRelatorios() {
                     <div class="report-mobile-content">
                         <div class="report-mobile-heading">
                             <span class="report-mobile-number">Nº ${safeNumero}</span>
-                            <span class="report-mobile-status ${ativo.ativo ? 'is-active' : 'is-inactive'}">${ativo.ativo ? 'Ativo' : 'Baixado'}</span>
+                            <span class="report-mobile-status ${possuiDefeito ? 'is-defective' : (ativo.ativo ? 'is-active' : 'is-inactive')}">${statusExibicao}</span>
                         </div>
                         <h3 class="report-mobile-item">${safeItem}</h3>
                         <p class="report-mobile-classification">${safeClassificacao}</p>
@@ -2375,7 +2451,7 @@ function exportarCSV() {
         ativo.nf,
         ativo.pagamento,
         Number(ativo.preco || 0).toFixed(2).replace('.', ','),
-        ativo.ativo ? 'Ativo' : 'Baixado'
+        getStatusExibicao(ativo)
     ]);
 
     const csv = [headers, ...rows]
@@ -2415,7 +2491,7 @@ function imprimirRelatorio() {
             <td>${escapeHTML(formatDate(ativo.data))}</td>
             <td>${escapeHTML(ativo.nf)}</td>
             <td>${escapeHTML(formatMoney(ativo.preco))}</td>
-            <td>${ativo.ativo ? 'Ativo' : 'Baixado'}</td>
+            <td>${escapeHTML(getStatusExibicao(ativo))}</td>
         </tr>
     `).join('');
 
