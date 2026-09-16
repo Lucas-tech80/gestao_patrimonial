@@ -2385,7 +2385,7 @@ function renderRelatorios() {
             : '<i class="fa-solid fa-image" aria-hidden="true"></i>';
 
         return `
-        <tr class="report-table-row hover:bg-slate-50">
+        <tr class="report-table-row report-interactive-row" data-ativo-id="${escapeHTML(String(ativo.id))}" tabindex="0" aria-label="Abrir detalhes de ${safeItem}, plaqueta ${safeNumero}">
             <td class="px-4 py-3 font-mono text-slate-600">${escapeHTML(ativo.numero)}</td>
             <td class="px-4 py-3 font-semibold text-slate-800">${escapeHTML(ativo.item)}</td>
             <td class="px-4 py-3 text-slate-600">${escapeHTML(ativo.classificacao)}</td>
@@ -2397,9 +2397,9 @@ function renderRelatorios() {
                 </span>
             </td>
         </tr>
-        <tr class="report-mobile-row">
+        <tr class="report-mobile-row report-interactive-row">
             <td colspan="6" class="p-0">
-                <article class="report-mobile-card">
+                <article class="report-mobile-card" data-ativo-id="${escapeHTML(String(ativo.id))}" tabindex="0" role="button" aria-label="Abrir detalhes de ${safeItem}, plaqueta ${safeNumero}">
                     <div class="report-mobile-photo" aria-label="Foto de ${safeItem}">
                         ${imageHTML}
                     </div>
@@ -2614,6 +2614,27 @@ function bindUIEvents() {
     ['relatorioBusca', 'relatorioClassificacao', 'relatorioLocal', 'relatorioStatus'].forEach((id) => {
         getEl(id)?.addEventListener('input', renderRelatorios);
         getEl(id)?.addEventListener('change', renderRelatorios);
+    });
+
+    // As linhas de relatórios reutilizam o mesmo modal de detalhes da aba Itens.
+    // A delegação preserva a interação após cada atualização dos filtros.
+    const relatorioTabela = getEl('relatorioTabela');
+    const abrirDetalhesDoRelatorio = (target) => {
+        const item = target.closest('[data-ativo-id]');
+        if (!item || !relatorioTabela?.contains(item)) return;
+
+        openModal(item.dataset.ativoId);
+    };
+
+    relatorioTabela?.addEventListener('click', (event) => abrirDetalhesDoRelatorio(event.target));
+    relatorioTabela?.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+
+        const item = event.target.closest('[data-ativo-id]');
+        if (!item || !relatorioTabela.contains(item)) return;
+
+        event.preventDefault();
+        openModal(item.dataset.ativoId);
     });
 
     getEl('btnExportarCSV')?.addEventListener('click', exportarCSV);

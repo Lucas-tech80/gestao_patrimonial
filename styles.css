@@ -184,6 +184,32 @@ body {
     object-fit: cover;
 }
 
+/* Relatórios usa o mesmo detalhamento dos cards em Itens. */
+.report-interactive-row,
+.report-mobile-card[data-ativo-id] {
+    cursor: pointer;
+}
+
+.report-table-row.report-interactive-row {
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.report-table-row.report-interactive-row:hover {
+    background-color: #f8fafc;
+}
+
+.report-table-row.report-interactive-row:active {
+    background-color: #eff6ff;
+}
+
+.report-table-row.report-interactive-row:focus-visible,
+.report-mobile-card[data-ativo-id]:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 2px solid #93c5fd;
+    outline-offset: -2px;
+}
+
 .summary-kpi-total .summary-kpi-sparkline { color: #34d399; }
 .summary-kpi-items .summary-kpi-sparkline { color: #60a5fa; }
 .summary-kpi-locations .summary-kpi-sparkline { color: #a78bfa; }
@@ -1150,6 +1176,16 @@ textarea {
         border: 1px solid rgba(226, 232, 240, 0.9);
         border-radius: 0.875rem;
         box-shadow: 0 3px 10px rgba(15, 23, 42, 0.045);
+        transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    }
+
+    .report-mobile-card[data-ativo-id]:hover {
+        border-color: #bfdbfe;
+        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+    }
+
+    .report-mobile-card[data-ativo-id]:active {
+        transform: scale(0.995);
     }
 
     .report-mobile-photo {
