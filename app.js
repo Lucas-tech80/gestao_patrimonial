@@ -16,6 +16,7 @@ const TABLE_HISTORICO = 'patrimonios_historico';
 const BUCKET_FOTOS = 'foto_patrimonial';
 const BUCKET_NFS = 'patrimonios-nfs';
 const BUCKET_IMAG_NF = 'imag_nf';
+const INVOICE_STORAGE_FOLDER = 'img_nf';
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const ADMIN_CONFIG_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/admin-config`;
 
@@ -26,6 +27,7 @@ const IMAGE_PLACEHOLDER = 'https://placehold.co/400x400/f8fafc/64748b?text=Sem+F
 const getCardPhotoUrl = (ativo) => ativo.img_url || null;
 
 let storagePhotoIndexPromise = null;
+let storageInvoiceIndexPromise = null;
 
 const normalizePhotoKey = (value) => String(value || '')
     .normalize('NFD')
@@ -112,6 +114,54 @@ const isStorageImage = (entry) => Boolean(
     entry?.metadata?.mimetype?.startsWith('image/')
     || /\.(jpe?g|png|webp|gif)$/i.test(entry?.name || '')
 );
+
+async function loadStorageInvoiceIndex() {
+    if (storageInvoiceIndexPromise) return storageInvoiceIndexPromise;
+
+    storageInvoiceIndexPromise = (async () => {
+        const { data, error } = await supabaseClient.storage
+            .from(BUCKET_IMAG_NF)
+            .list(INVOICE_STORAGE_FOLDER, { limit: 10000 });
+
+        if (error) throw error;
+        return (data || []).filter(isStorageImage);
+    })().catch((error) => {
+        console.warn('Não foi possível consultar as imagens das notas fiscais:', error);
+        return [];
+    });
+
+    return storageInvoiceIndexPromise;
+}
+
+function isUnavailableInvoiceValue(value) {
+    return !value || /^(S\/NF|N\/A|N\\A)$/i.test(String(value).trim());
+}
+
+async function resolveNotaFiscalPath(ativo) {
+    const storedValue = String(ativo?.imag_nf || '').trim();
+    if (isUnavailableInvoiceValue(storedValue)) return null;
+
+    if (/^https?:\/\//i.test(storedValue)) return storedValue;
+
+    const normalizedValue = storedValue.replace(/\\/g, '/').replace(/^\/+/, '');
+    const isStoragePath = !isLegacyLocalPath(normalizedValue)
+        && normalizedValue.includes('/')
+        && !/\/$/.test(normalizedValue);
+    if (isStoragePath) return normalizedValue;
+
+    const numeroNF = String(ativo?.nf || '').replace(/\D/g, '');
+    if (!numeroNF) return null;
+
+    const files = await loadStorageInvoiceIndex();
+    const matches = files.filter((file) => {
+        const fileName = String(file.name || '').trim();
+        return new RegExp(`^NF\\s*${numeroNF}(?:\\D|$)`, 'i').test(fileName);
+    });
+
+    return matches.length === 1
+        ? `${INVOICE_STORAGE_FOLDER}/${matches[0].name}`
+        : null;
+}
 
 const isLegacyLocalPath = (value) => /^[A-Z]:[\\/]/i.test(value) || value.startsWith('\\\\');
 
@@ -310,9 +360,7 @@ const normalizeAtivo = (ativo) => ({
         ? null
         : (ativo.documento || null),
     // A imagem da nota fiscal é fornecida pela nova coluna imag_nf.
-    imag_nf: isLegacyLocalPath(String(ativo.imag_nf || '').trim())
-        ? null
-        : (ativo.imag_nf || null),
+    imag_nf: isUnavailableInvoiceValue(ativo.imag_nf) ? null : (ativo.imag_nf || null),
     status: ativo.status ?? null,
     ativo: ['ativo', 'ativos'].includes(normalizeStatus(ativo.status))
 });
@@ -894,12 +942,19 @@ async function uploadStorageFile(bucket, file, numero, tipo) {
 
 async function abrirNotaFiscal(ativo) {
     try {
-        const usaImagemNotaFiscal = Boolean(ativo?.imag_nf);
-        const anexoNotaFiscal = usaImagemNotaFiscal ? ativo.imag_nf : ativo?.pdf_url;
+        const usaImagemNotaFiscal = !isUnavailableInvoiceValue(ativo?.imag_nf);
+        let anexoNotaFiscal = usaImagemNotaFiscal ? await resolveNotaFiscalPath(ativo) : null;
+
+        if (!anexoNotaFiscal && ativo?.pdf_url) {
+            anexoNotaFiscal = ativo.pdf_url;
+        }
+
         if (!anexoNotaFiscal) {
             showToast('Nenhuma nota fiscal anexada para este ativo.', 'warning');
             return;
         }
+
+        const usaPdfLegado = !usaImagemNotaFiscal || anexoNotaFiscal === ativo.pdf_url;
 
         const documento = String(anexoNotaFiscal).trim();
         if (/^https?:\/\//i.test(documento)) {
@@ -912,14 +967,14 @@ async function abrirNotaFiscal(ativo) {
         const caminho = documento
             .replace(/\\/g, '/')
             .replace(/^\/+/, '')
-            .replace(new RegExp(`^${usaImagemNotaFiscal ? BUCKET_IMAG_NF : BUCKET_NFS}/`, 'i'), '');
+            .replace(new RegExp(`^${usaPdfLegado ? BUCKET_NFS : BUCKET_IMAG_NF}/`, 'i'), '');
         if (!caminho || /^[a-z]:\//i.test(caminho)) {
             showToast('O arquivo da nota fiscal não possui um caminho válido.', 'warning');
             return;
         }
 
         const { data, error } = await supabaseClient.storage
-            .from(usaImagemNotaFiscal ? BUCKET_IMAG_NF : BUCKET_NFS)
+            .from(usaPdfLegado ? BUCKET_NFS : BUCKET_IMAG_NF)
             .createSignedUrl(caminho, 60 * 60);
 
         if (error) throw error;
