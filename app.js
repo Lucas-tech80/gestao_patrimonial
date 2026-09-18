@@ -365,6 +365,24 @@ const normalizeAtivo = (ativo) => ({
     ativo: ['ativo', 'ativos'].includes(normalizeStatus(ativo.status))
 });
 
+// A plaqueta é a identificação única do patrimônio. Caso uma importação gere
+// registros repetidos, a interface preserva o registro original (menor ID)
+// sem alterar ou excluir os dados armazenados no Supabase.
+function removeDuplicateAtivosFromView(registros) {
+    const registrosPorNumero = new Map();
+
+    registros.forEach((ativo) => {
+        const numero = String(ativo.numero || '').trim();
+        const existente = registrosPorNumero.get(numero);
+
+        if (!existente || Number(ativo.id) < Number(existente.id)) {
+            registrosPorNumero.set(numero, ativo);
+        }
+    });
+
+    return [...registrosPorNumero.values()];
+}
+
 const parseSupabaseError = (error) => {
     if (!error) return 'Erro desconhecido.';
     if (error.message) return error.message;
@@ -845,9 +863,9 @@ async function carregarAtivos({ silent = false } = {}) {
             // dashboard nem impedir a leitura dos patrimônios.
             console.warn('Não foi possível resolver as fotos; dados carregados sem imagens:', photoError);
         }
-        todosAtivosData = registrosComFotos
+        todosAtivosData = removeDuplicateAtivosFromView(registrosComFotos
             .map(normalizeAtivo)
-            .filter((ativo) => !isCadeiraEmDefeito(ativo));
+            .filter((ativo) => !isCadeiraEmDefeito(ativo)));
         ativosData = todosAtivosData.filter((ativo) => ativo.ativo);
 
         setConnectionStatus('connected');
