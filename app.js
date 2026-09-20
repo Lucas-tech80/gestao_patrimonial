@@ -11,10 +11,16 @@ const SUPABASE_URL = 'https://imdwkxhbcohyyczhvsil.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_vLrOsiiwDNF-XbycmZZEKA_ChBiZj8Z';
 const SUPABASE_SCHEMA = 'gestao_patrimonial';
 const TABLE_PATRIMONIOS = 'patrimonios';
-const READ_ONLY_MODE = true;
+// A leitura exige sessão autenticada e os usuários autenticados podem
+// cadastrar, editar e baixar patrimônios. As permissões efetivas continuam
+// protegidas pelo RLS configurado no Supabase.
+const READ_ONLY_MODE = false;
 const TABLE_HISTORICO = 'patrimonios_historico';
 const BUCKET_FOTOS = 'foto_patrimonial';
-const BUCKET_NFS = 'patrimonios-nfs';
+// O projeto já utiliza o bucket "imag_nf" para os anexos das notas fiscais.
+// PDFs e imagens ficam nesse mesmo bucket para não depender de um bucket
+// separado que pode não existir no Supabase.
+const BUCKET_NFS = 'imag_nf';
 const BUCKET_IMAG_NF = 'imag_nf';
 const INVOICE_STORAGE_FOLDER = 'img_nf';
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
@@ -161,6 +167,65 @@ async function resolveNotaFiscalPath(ativo) {
     return matches.length === 1
         ? `${INVOICE_STORAGE_FOLDER}/${matches[0].name}`
         : null;
+}
+
+async function findInvoiceStoragePath(ativo) {
+    const numero = normalizeNumero(ativo?.numero);
+    if (!numero) return null;
+
+    const bucket = supabaseClient.storage.from(BUCKET_IMAG_NF);
+    const folders = [
+        `${INVOICE_STORAGE_FOLDER}/${numero}`,
+        numero,
+    ];
+
+    for (const folder of folders) {
+        const { data, error } = await bucket.list(folder, { limit: 10000 });
+        if (error) continue;
+
+        const file = (data || []).find((entry) => (
+            entry?.name
+            && (/\.(pdf|jpe?g|png|webp|gif)$/i.test(entry.name)
+                || entry.metadata?.mimetype?.startsWith('image/'))
+        ));
+
+        if (file?.name) return `${folder}/${file.name}`;
+    }
+
+    return null;
+}
+
+async function resolveExistingInvoiceAttachment(ativo) {
+    const candidatos = [ativo?.pdf_url, ativo?.imag_nf]
+        .map((value) => String(value || '').trim())
+        .filter((value, index, values) => (
+            value
+            && !isUnavailableInvoiceValue(value)
+            && !isLegacyLocalPath(value)
+            && values.indexOf(value) === index
+        ));
+
+    for (const candidato of candidatos) {
+        if (/^https?:\/\//i.test(candidato)) return candidato;
+
+        const caminho = candidato
+            .replace(/\\/g, '/')
+            .replace(/^\/+/, '')
+            .replace(new RegExp(`^${BUCKET_IMAG_NF}/`, 'i'), '');
+        const caminhoFinal = caminho.includes('/')
+            ? caminho
+            : `${INVOICE_STORAGE_FOLDER}/${caminho}`;
+
+        const { data, error } = await supabaseClient.storage
+            .from(BUCKET_IMAG_NF)
+            .createSignedUrl(caminhoFinal, 60);
+        if (!error && data?.signedUrl) return candidato;
+    }
+
+    const caminhoLegado = await resolveNotaFiscalPath(ativo);
+    if (caminhoLegado) return caminhoLegado;
+
+    return findInvoiceStoragePath(ativo);
 }
 
 const isLegacyLocalPath = (value) => /^[A-Z]:[\\/]/i.test(value) || value.startsWith('\\\\');
@@ -935,7 +1000,9 @@ async function uploadStorageFile(bucket, file, numero, tipo) {
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '');
 
-    const filePath = `${numero}/${tipo}-${Date.now()}.${extension}`;
+    const filePath = bucket === BUCKET_NFS
+        ? `${INVOICE_STORAGE_FOLDER}/${numero}/${tipo}-${Date.now()}.${extension}`
+        : `${numero}/${tipo}-${Date.now()}.${extension}`;
 
     const { data, error } = await supabaseClient.storage
         .from(bucket)
@@ -960,19 +1027,12 @@ async function uploadStorageFile(bucket, file, numero, tipo) {
 
 async function abrirNotaFiscal(ativo) {
     try {
-        const usaImagemNotaFiscal = !isUnavailableInvoiceValue(ativo?.imag_nf);
-        let anexoNotaFiscal = usaImagemNotaFiscal ? await resolveNotaFiscalPath(ativo) : null;
-
-        if (!anexoNotaFiscal && ativo?.pdf_url) {
-            anexoNotaFiscal = ativo.pdf_url;
-        }
+        const anexoNotaFiscal = await resolveExistingInvoiceAttachment(ativo);
 
         if (!anexoNotaFiscal) {
             showToast('Nenhuma nota fiscal anexada para este ativo.', 'warning');
             return;
         }
-
-        const usaPdfLegado = !usaImagemNotaFiscal || anexoNotaFiscal === ativo.pdf_url;
 
         const documento = String(anexoNotaFiscal).trim();
         if (/^https?:\/\//i.test(documento)) {
@@ -985,17 +1045,34 @@ async function abrirNotaFiscal(ativo) {
         const caminho = documento
             .replace(/\\/g, '/')
             .replace(/^\/+/, '')
-            .replace(new RegExp(`^${usaPdfLegado ? BUCKET_NFS : BUCKET_IMAG_NF}/`, 'i'), '');
-        if (!caminho || /^[a-z]:\//i.test(caminho)) {
+            .replace(new RegExp(`^${BUCKET_IMAG_NF}/`, 'i'), '');
+        const caminhoFinal = caminho.includes('/')
+            ? caminho
+            : `${INVOICE_STORAGE_FOLDER}/${caminho}`;
+        if (!caminhoFinal || /^[a-z]:\//i.test(caminhoFinal)) {
             showToast('O arquivo da nota fiscal não possui um caminho válido.', 'warning');
             return;
         }
 
-        const { data, error } = await supabaseClient.storage
-            .from(usaPdfLegado ? BUCKET_NFS : BUCKET_IMAG_NF)
-            .createSignedUrl(caminho, 60 * 60);
+        let caminhoParaAbrir = caminhoFinal;
+        let { data, error } = await supabaseClient.storage
+            .from(BUCKET_IMAG_NF)
+            .createSignedUrl(caminhoParaAbrir, 60 * 60);
 
-        if (error) throw error;
+        // Se o campo do banco tiver um caminho antigo ou incompleto, procure
+        // automaticamente o anexo dentro da pasta da plaqueta.
+        if (error) {
+            caminhoParaAbrir = await findInvoiceStoragePath(ativo);
+            if (!caminhoParaAbrir) throw error;
+
+            const fallback = await supabaseClient.storage
+                .from(BUCKET_IMAG_NF)
+                .createSignedUrl(caminhoParaAbrir, 60 * 60);
+            data = fallback.data;
+            error = fallback.error;
+        }
+
+        if (error || !data?.signedUrl) throw error || new Error('URL assinada não disponível.');
 
         window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
     } catch (error) {
@@ -1041,7 +1118,6 @@ function getFormPayload() {
     const dataCompra = getEl('cad_data').value;
     const preco = Number(getEl('cad_preco').value);
     const nf = getEl('cad_nf').value.trim() || 'S/NF';
-    const pagamento = getEl('cad_pagamento').value.trim() || 'Não informado';
 
     if (!numero) throw new Error('Informe uma plaqueta válida.');
     if (!item) throw new Error('Informe a descrição do item.');
@@ -1054,11 +1130,12 @@ function getFormPayload() {
         numero,
         item,
         classificacao,
-        data_compra: dataCompra,
+        // A coluna exposta pela tabela patrimonios é "data".
+        // "data_compra" fazia o PostgREST rejeitar o cadastro/edição.
+        data: dataCompra,
         nf,
         preco,
-        local,
-        pagamento
+        local
     };
 }
 
@@ -1100,7 +1177,7 @@ async function criarAtivo(payload, imagemFile, pdfFile) {
 
         const insertPayload = {
             ...payload,
-            img_url: imgUrl,
+            foto: imgUrl,
             documento: pdfUrl,
             ativo: true
         };
@@ -1140,12 +1217,19 @@ async function atualizarAtivo(payload, imagemFile, pdfFile) {
     const ativoOriginal = todosAtivosData.find((ativo) => Number(ativo.id) === Number(editingAtivoId));
     if (!ativoOriginal) throw new Error('Ativo em edição não encontrado.');
 
-    await verificarNumeroDisponivel(payload.numero, editingAtivoId);
+    // Ao editar somente a NF, a plaqueta permanece a mesma. Não faça uma
+    // nova validação nesse caso: bases antigas podem conter registros
+    // duplicados que são ocultados pela deduplicação da tela e isso impediria
+    // qualquer atualização do ativo correto.
+    const numeroMudou = normalizeNumero(ativoOriginal.numero) !== normalizeNumero(payload.numero);
+    if (numeroMudou) {
+        await verificarNumeroDisponivel(payload.numero, editingAtivoId);
+    }
 
     const updatePayload = { ...payload };
 
     if (imagemFile) {
-        updatePayload.img_url = await uploadStorageFile(BUCKET_FOTOS, imagemFile, payload.numero, 'imagem');
+        updatePayload.foto = await uploadStorageFile(BUCKET_FOTOS, imagemFile, payload.numero, 'imagem');
     }
 
     if (pdfFile) {
@@ -2191,6 +2275,28 @@ function toggleAccordion(id) {
 
 // ================= MODAL DETALHES =================
 
+function marcarNotaFiscalNaoAnexada(btnNf) {
+    btnNf.classList.add('opacity-50', 'cursor-not-allowed');
+    btnNf.innerHTML = '<i class="fa-solid fa-file-pdf mr-2"></i> NF Não Anexada';
+    btnNf.onclick = null;
+}
+
+async function atualizarBotaoNotaFiscal(ativo, btnNf) {
+    const anexoNotaFiscal = await resolveExistingInvoiceAttachment(ativo);
+
+    // O modal pode ter sido fechado ou trocado enquanto o Storage respondia.
+    if (activeModalAtivoId !== Number(ativo.id) || !btnNf.isConnected) return;
+
+    if (!anexoNotaFiscal) {
+        marcarNotaFiscalNaoAnexada(btnNf);
+        return;
+    }
+
+    btnNf.classList.remove('opacity-50', 'cursor-not-allowed');
+    btnNf.innerHTML = `<i class="fa-solid ${ativo.imag_nf ? 'fa-image' : 'fa-file-pdf'} text-accent mr-2"></i> Visualizar Nota Fiscal`;
+    btnNf.onclick = () => abrirNotaFiscal(ativo);
+}
+
 function openModal(id) {
     const ativo = todosAtivosData.find((a) => Number(a.id) === Number(id));
     if (!ativo) return;
@@ -2225,17 +2331,11 @@ function openModal(id) {
     imgEl.alt = ativo.item || 'Foto do Item';
 
     const btnNf = getEl('modal-btn-nf');
-
-    const anexoNotaFiscal = ativo.imag_nf || ativo.pdf_url;
-    if (anexoNotaFiscal) {
-        btnNf.classList.remove('opacity-50', 'cursor-not-allowed');
-        btnNf.innerHTML = `<i class="fa-solid ${ativo.imag_nf ? 'fa-image' : 'fa-file-pdf'} text-accent mr-2"></i> Visualizar Nota Fiscal`;
-        btnNf.onclick = () => abrirNotaFiscal(ativo);
-    } else {
-        btnNf.classList.add('opacity-50', 'cursor-not-allowed');
-        btnNf.innerHTML = '<i class="fa-solid fa-file-pdf mr-2"></i> NF Não Anexada';
-        btnNf.onclick = null;
-    }
+    marcarNotaFiscalNaoAnexada(btnNf);
+    atualizarBotaoNotaFiscal(ativo, btnNf).catch((error) => {
+        console.warn('Não foi possível validar a nota fiscal:', error);
+        if (activeModalAtivoId === Number(ativo.id)) marcarNotaFiscalNaoAnexada(btnNf);
+    });
 
     const btnEditar = getEl('modal-btn-editar');
     const btnBaixa = getEl('modal-btn-baixa');
@@ -2243,11 +2343,17 @@ function openModal(id) {
     btnEditar.onclick = () => startEditAtivo(ativo.id);
     btnBaixa.onclick = () => openBaixaModal(ativo.id);
 
-    if (ativo.ativo && !READ_ONLY_MODE) {
+    // Qualquer usuário autenticado pode corrigir ou atualizar qualquer item,
+    // inclusive patrimônios já baixados. A baixa continua restrita aos ativos.
+    if (!READ_ONLY_MODE) {
         btnEditar.classList.remove('hidden');
-        btnBaixa.classList.remove('hidden');
     } else {
         btnEditar.classList.add('hidden');
+    }
+
+    if (!READ_ONLY_MODE) {
+        btnBaixa.classList.remove('hidden');
+    } else {
         btnBaixa.classList.add('hidden');
     }
 
