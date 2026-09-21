@@ -1506,7 +1506,22 @@ const normalizeDashboardCategoryValue = (value) => String(value || '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
+const isVisualAreaExternaItem = (ativo) => {
+    const item = normalizeDashboardCategoryValue(ativo?.item);
+    return [
+        'lavadora alta pressao',
+        'escada multifuncional 4 x 3 mor',
+        'container'
+    ].includes(item);
+};
+
+const getVisualClassification = (ativo) => isVisualAreaExternaItem(ativo)
+    ? 'Área Externa'
+    : (ativo?.classificacao || 'Outros');
+
 function getDashboardClassification(ativo) {
+    if (isVisualAreaExternaItem(ativo)) return 'Área Externa';
+
     const classificacao = normalizeDashboardCategoryValue(ativo?.classificacao);
     const item = normalizeDashboardCategoryValue(ativo?.item);
 
@@ -2137,7 +2152,7 @@ renderAtivosList = function (filtro = '') {
 
     const createCard = (ativo) => {
         const safeItem = escapeHTML(ativo.item);
-        const safeClassificacao = escapeHTML(ativo.classificacao);
+        const safeClassificacao = escapeHTML(getVisualClassification(ativo));
         const safeNumero = escapeHTML(ativo.numero);
         const cardPhotoUrl = getCardPhotoUrl(ativo);
         const imageHTML = cardPhotoUrl
@@ -2327,7 +2342,7 @@ function openModal(id) {
 
     getEl('modal-numero').textContent = ativo.numero;
     getEl('modal-item').textContent = ativo.item;
-    getEl('modal-classificacao').textContent = ativo.classificacao;
+    getEl('modal-classificacao').textContent = getVisualClassification(ativo);
     getEl('modal-local').textContent = ativo.local;
     getEl('modal-preco').textContent = formatMoney(ativo.preco);
     getEl('modal-data').textContent = formatDate(ativo.data);
