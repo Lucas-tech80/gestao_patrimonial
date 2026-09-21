@@ -1499,6 +1499,39 @@ function renderDashboardVariations(metrics, previousMetrics) {
     });
 }
 
+const normalizeDashboardCategoryValue = (value) => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('pt-BR')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+function getDashboardClassification(ativo) {
+    const classificacao = normalizeDashboardCategoryValue(ativo?.classificacao);
+    const item = normalizeDashboardCategoryValue(ativo?.item);
+
+    const aliases = {
+        'Veículo': new Set(['carro', 'veiculo', 'veiculos', 'caminhao', 'caminhao', 'moto', 'motocicleta', 'van', 'onibus']),
+        'Máquina': new Set(['maquina', 'maquinas']),
+        'Eletrônico': new Set(['computador', 'celular', 'eletroeletronico', 'tablet', 'radio', 'eletronico', 'eletronicos']),
+        'Eletrodoméstico': new Set(['eletrodomestico', 'eletrodomesticos']),
+        'Móveis': new Set(['movel', 'moveis', 'cadeira', 'banco']),
+        Outros: new Set(['ar condicionado', 'lousa', 'extintor', 'container', 'outros'])
+    };
+
+    const categoria = Object.entries(aliases)
+        .find(([, valores]) => valores.has(classificacao))?.[0];
+    if (categoria) return categoria;
+
+    // Corrige registros antigos que ficaram como "Outros", mas cujo item
+    // identifica claramente um veículo. O local nunca participa deste cálculo.
+    if (aliases['Veículo'].has(item) || /\b(carro|veiculo|caminhao|moto|motocicleta|van|onibus)\b/.test(item)) {
+        return 'Veículo';
+    }
+
+    return 'Outros';
+}
+
 function initDashboard({ compare = true } = {}) {
     const idsIncluidos = new Set();
     const itensResumo = todosAtivosData.filter((ativo) => {
@@ -1552,23 +1585,12 @@ function initDashboard({ compare = true } = {}) {
         'Outros': 0
     };
 
-    const classificacaoPorCategoria = {
-        'Veículo': ['CARRO'],
-        'Máquina': ['Maquina'],
-        'Eletrônico': ['Computador', 'Celular', 'Eletroeletrônico', 'Tablet', 'Radio'],
-        'Eletrodoméstico': ['Eletrodomestico'],
-        'Móveis': ['Móvel', 'Cadeira', 'Banco'],
-        'Área Externa': [],
-        Outros: ['Ar Condicionado', 'Lousa', 'Extintor', 'Container']
-    };
-
     itensResumo.forEach((ativo) => {
         const local = ativo.local || 'Sem local definido';
-        const categoriaOriginal = Object.keys(classificacaoPorCategoria)
-            .find((nome) => classificacaoPorCategoria[nome].includes(ativo.classificacao));
-        const categoria = isVisualOutrosItem(ativo)
-            ? Object.keys(classificacaoPorCategoria).find((nome) => normalizeLocationText(nome) === 'area externa') || Object.keys(classificacaoPorCategoria)[5]
-            : categoriaOriginal || 'Outros';
+        // A classificação financeira não pode ser alterada pelo local físico.
+        // Oficina/Externa continua sendo um agrupamento visual da tela de
+        // ativos, mas não transforma um veículo em "Área Externa".
+        const categoria = getDashboardClassification(ativo);
 
         resumoLocal[local] = (resumoLocal[local] || 0) + 1;
         resumoClassificacao[categoria] += Number(ativo.preco || 0);
